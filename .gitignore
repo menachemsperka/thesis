@@ -84,6 +84,9 @@ models/
 *.npz
 
 # Project data/model output directories
-data/
 models/
 outputs/
+
+# Keep source datasets tracked in the repository
+!data/
+!data/**
