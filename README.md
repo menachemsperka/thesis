@@ -12,6 +12,11 @@ This folder is an organized, upload-ready project for running the thesis experim
 | 04 | AUC Cascaded Pipeline | Three-step cascaded NER (entity detection → BIO → type) |
 | 05 | Cascaded Step-3 Consistency | Exp 04 with B/I entity-type reconciliation |
 | 06 | Fusion | Combines regular NER and cascaded pipeline predictions |
+| 06_fusion_normalized | Calibrated Fusion | Exp 06 + confidence normalization (temperature scaling) before arbitration |
+| 06_fusion_entropy | Entropy-Weighted Fusion | Exp 06 + inverse-entropy weighting so uncertain predictions count less |
+| 06_fusion_learned_weights | Learned-Weights Fusion | Exp 06 + validation-learned global weighting between regular and cascaded confidence |
+| 06_fusion_svm | SVM Router Fusion | Exp 06 + train-split linear SVM router for disagreement resolution |
+| 06_fusion_ensemble_rules | Ensemble-Rules Fusion | Exp 06 + explicit agreement/confidence-gap arbitration rules |
 | 07 | Sentence Split Strategy | Compares 8 train/eval split strategies for rare-label coverage |
 
 ## Project Structure
@@ -28,12 +33,18 @@ This folder is an organized, upload-ready project for running the thesis experim
 │   ├── experiment_04_auc_cascaded_pipeline.py
 │   ├── experiment_05_auc_cascaded_pipeline_step3_consistency.py
 │   ├── experiment_06_fusion_regular_and_cascaded.py
+│   ├── experiment_06_fusion_normalized.py
+│   ├── experiment_06_fusion_entropy.py
+│   ├── experiment_06_fusion_learned_weights.py
+│   ├── experiment_06_fusion_svm.py
+│   ├── experiment_06_fusion_ensemble_rules.py
 │   └── experiment_07_sentence_split_strategy.py
 ├── core/
 │   ├── th_functions.py             # Token classification, split, training
 │   ├── NERtraining.py              # PrepDataSetNERTraining class
 │   ├── auc_2t_training.py          # AUC-2T model
-│   └── auc_cascaded_pipeline.py    # Three-step cascaded NER pipeline
+│   ├── auc_cascaded_pipeline.py    # Three-step cascaded NER pipeline
+│   └── confidence_calibration.py   # Temperature scaling for cross-model confidence normalization
 ├── data/                           # Dataset CSV files
 ├── models/                         # Local model checkpoints
 └── outputs/                        # All experiment results
@@ -185,7 +196,7 @@ These files are consumed by `run_split_comparison.py`.
 ## Split Comparison — Impact on Experiments 03–06
 
 You can measure split-strategy impact by running each downstream experiment
-across **all experiment-07 split variants** (typically 8 variants).
+across **all experiment-07 split variants** (3 variants).
 
 ```bash
 # Reuse saved split artifacts if valid; rerun exp07 only if needed
@@ -218,6 +229,79 @@ Results are saved to `outputs/split_comparison/`:
 | `THESIS_DEBUG` | `0` | Set to `1` for verbose output |
 | `THESIS_PRESPLIT_TRAIN_JSON` | — | Path to pre-split train JSON (set automatically by runner) |
 | `THESIS_PRESPLIT_EVAL_JSON` | — | Path to pre-split eval JSON (set automatically by runner) |
+
+## Experiment 06_fusion_normalized — Confidence-Normalized Fusion
+
+This experiment is a calibrated version of fusion (Exp 06). It was added to
+solve a known issue: the two confidence sources in fusion are not naturally on
+the same scale.
+
+- Regular NER confidence: max softmax probability.
+- Cascaded confidence: `(1 - entity_prob)` for `O`, otherwise `entity_prob * bio_prob`.
+
+Because these are produced by different models and different objectives, direct
+comparison can cause suboptimal arbitration. Exp `06_fusion_normalized` learns a
+temperature per source and applies calibration before choosing between regular
+and cascaded predictions.
+
+Core idea:
+
+$$
+p_{calibrated} = \sigma\left(\frac{\text{logit}(p)}{T}\right)
+$$
+
+Where $T$ is learned from prediction correctness (maximum-likelihood calibration).
+
+Run examples:
+
+```bash
+# Run only calibrated fusion in cross-comparison
+python run_cross_data_model_comparison.py --experiments 06_fusion_normalized
+
+# Compare original fusion vs calibrated fusion
+python run_cross_data_model_comparison.py --experiments 06,06_fusion_normalized
+```
+
+Outputs for the new experiment are written under:
+
+- `outputs/exp06_fusion_normalized/`
+
+Detailed design and formulas are documented in:
+
+- `CALIBRATION_README.md`
+
+## Experiment 04 — AUC Cascaded Pipeline
+
+This experiment implements NER as a three-stage cascaded pipeline instead of a single token-classification step.
+
+- Step 1: detect whether each token is part of an entity or `O`.
+- Step 2: assign the BIO boundary tag.
+- Step 3: predict the entity type.
+
+The main idea is to decompose the full NER decision into simpler subtasks. This can make boundary decisions and entity typing more explicit, and it also exposes intermediate outputs that are useful for analysis and downstream fusion.
+
+Outputs for this experiment are written under:
+
+- `outputs/exp04/`
+
+## Fusion Results Summary
+
+Using the ready-results comparison export (`outputs/cross_comparison/cross_comparison_ready_all_methods_latest.json` / `.xlsx`), the current fusion variants compare as follows against the two relevant baselines:
+
+- Regular NER: Exp `01`
+- Cascaded Pipeline: Exp `04`
+
+| Fusion method | vs Exp01 | vs Exp04 | Beats both Exp01 and Exp04 | Mean delta vs Exp01 | Mean delta vs Exp04 | Interpretation |
+|-------|-------|-------|-------|-------|-------|-------|
+| `06` | 7 wins / 5 losses | 7 wins / 5 losses | 3 / 12 | +0.0026 | +0.0202 | Baseline fusion helps sometimes, but is not consistently better than its source models |
+| `06_fusion_normalized` | 6 wins / 6 losses | 6 wins / 6 losses | 4 / 12 | +0.0000 | +0.0176 | Confidence calibration alone does not reliably solve fusion underperformance |
+| `06_fusion_entropy` | 9 wins / 2 losses / 1 tie | 7 wins / 5 losses | 7 / 12 | +0.0101 | +0.0277 | Better than raw fusion; uncertainty-weighting helps on many disagreements |
+| `06_fusion_learned_weights` | 11 wins / 1 loss | 10 wins / 2 losses | 10 / 12 | +0.0327 | +0.0503 | Best overall variant; strongest and most consistent improvement |
+| `06_fusion_ensemble_rules` | 9 wins / 2 losses / 1 tie | 7 wins / 5 losses | 6 / 12 | +0.0180 | +0.0356 | Interpretable and useful, but still less consistent than learned weights |
+
+Current conclusion: `06_fusion_learned_weights` is the best fusion method in this repository. It is the only variant that is consistently strong against both source systems, beating both baselines in 10 of 12 shared model-condition comparisons.
+
+Why are there still 2 losses? Fusion is not an oracle that always knows which source model is correct. `06_fusion_learned_weights` learns one global weighting between regular and cascaded confidence, so it improves arbitration on average, but some disagreement cases remain inherently ambiguous. In those cases the wrong model can still have the stronger confidence signal, and a small number of token-level mistakes can reduce entity-level F1 even when the fusion rule is generally better overall.
 
 ## Excel Workbook Structure
 

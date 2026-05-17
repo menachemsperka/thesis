@@ -5,7 +5,7 @@
 This document gives a concise but implementation-faithful, step-by-step technical review of:
 
 - Exp01 baseline training flow
-- Exp07 split methods (all 9)
+- Exp07 split methods (all 4)
 - Exp08 augmentation flow
 - How everything is orchestrated in `run_cross_data_model_comparison.py`
 
@@ -45,7 +45,7 @@ Exp01 is the base NER workflow used as the regular baseline.
 
 ## 2) Exp07 Split Strategy Experiment
 
-Exp07 compares 9 sentence-level splitting methods. Each method is trained/evaluated across multiple seeds, then split artifacts are saved for reuse.
+Exp07 compares 4 sentence-level splitting methods. Each method is trained/evaluated across multiple seeds, then split artifacts are saved for reuse.
 
 ### Shared pipeline for all split methods
 
@@ -73,85 +73,32 @@ Implementation: `_simple_random_split(...)`
 
 Implementation: `_label_aware_split(...)` wrapper over `tf.split_list(..., ensure_label_coverage=True)`.
 
-1. Delegate split to core helper with label-coverage logic enabled.
-2. Use 70/30 sentence split target.
-3. Internally prioritize preserving non-O label distribution and maintaining train coverage.
+Step-by-step (what it does internally at a high level):
 
-### Exp07 Method 3: Rare-Label Boosted
+1. Start from sentence-level units (not token-level rows), where each sentence carries a set/list of non-O labels.
+2. Compute the global target split size (70/30 by sentence count).
+3. Compute label occurrence statistics from the full sentence pool.
+4. Enable `ensure_label_coverage=True`, which activates a label-aware assignment path instead of plain random slicing.
+5. Greedily allocate sentences while trying to:
+   - keep rare labels represented in train,
+   - avoid obvious label dropout,
+   - and stay close to the target fold sizes.
+6. If a sentence contains labels that are currently underrepresented in train, the helper tends to place it in train first.
+7. Continue assignment until all sentences are placed, then return train/eval lists.
 
-Implementation: `_rare_label_boosted_split(...)`
+How Method 2 preserves label representation:
 
-1. Compute non-O global label token counts.
-2. Define rare labels as labels with count <= median label frequency.
-3. Mark all sentences containing any rare label.
-4. Start train set from these rare-containing sentences.
-5. If train is too large, downsample rare set to target size.
-6. If train is too small, fill remaining slots from non-rare sentences (randomized).
-7. Remaining sentences become eval.
+1. It uses label-presence heuristics during assignment, rather than pure random placement.
+2. It prioritizes train coverage for scarce labels so the model does not miss them during training.
+3. It reduces (but does not mathematically eliminate) cases where a label is absent from one fold.
 
-### Exp07 Method 4: Inverse-Frequency Weighted (Presence-based)
+Limitations of Method 2 (important for comparison):
 
-Implementation: `_inverse_freq_weighted_split(...)`
+1. It is still a generic greedy heuristic, not a full multilabel stratification algorithm.
+2. It does not explicitly optimize per-label deficits in both folds at each assignment step.
+3. It can preserve train coverage well but still drift on eval proportionality for some minority labels.
 
-1. Compute global non-O label token counts and `max_freq`.
-2. For each sentence, get unique non-O labels (presence, not token multiplicity).
-3. Score sentence as `sum(max_freq / count(label))` over unique labels.
-4. Add tiny random tie-break noise.
-5. Sort descending by score.
-6. Take top `target_train_count` as train; rest as eval.
-
-### Exp07 Method 5: Min-Max Equalized
-
-Implementation: `_minmax_equalized_split(...)`
-
-1. Shuffle input sentences (seeded).
-2. Compute per-sentence non-O label token counts.
-3. Build global counts and target train counts per label (`total * 0.7`, min 1.0).
-4. Initialize empty train and zero current label counts.
-5. Greedy loop until train target size:
-   - For each candidate sentence not selected, simulate adding it.
-   - Compute minimum label coverage ratio across all labels.
-   - Select sentence that maximizes this minimum ratio.
-6. Selected sentences -> train; remainder -> eval.
-
-### Exp07 Method 6: Inverse-Frequency Token-Weighted
-
-Implementation: `_inverse_freq_token_weighted_split(...)`
-
-1. Compute global non-O counts and `max_freq`.
-2. For each sentence, count non-O labels with multiplicity.
-3. Score sentence as `sum(token_count_in_sentence(label) * max_freq / count(label))`.
-4. Add tiny random tie-break noise.
-5. Rank descending, take top `target_train_count` for train.
-6. Remaining sentences -> eval.
-
-### Exp07 Method 7: Inverse-Frequency Eval-Guaranteed
-
-Implementation: `_inverse_freq_eval_guaranteed_split(...)`
-
-Phase 1 (eval reservation):
-1. Compute global non-O counts.
-2. Sort labels by rarity (ascending count).
-3. For each rare-to-common label, reserve one sentence into eval that contains it (if available).
-4. Expand eval-covered label set from each reserved sentence.
-
-Phase 2 (train fill):
-5. Score non-reserved sentences by inverse-frequency presence score.
-6. Select top-scoring sentences into train until train target size.
-7. Eval is all non-train sentences (reserved + leftovers).
-
-### Exp07 Method 8: Inverse-Frequency Log-Scaled
-
-Implementation: `_inverse_freq_log_scaled_split(...)`
-
-1. Compute global non-O counts and `max_freq`.
-2. For each sentence, get unique non-O labels.
-3. Score sentence as `sum(log(1 + max_freq / count(label)))`.
-4. Add tiny random tie-break noise.
-5. Rank descending and select top `target_train_count` for train.
-6. Remaining sentences -> eval.
-
-### Exp07 Method 9: Multilabel Stratified (Iterative Stratification)
+### Exp07 Method 3: Multilabel Stratified (Iterative Stratification)
 
 Implementation: `_multilabel_stratified_split(...)`
 
@@ -164,7 +111,59 @@ Implementation: `_multilabel_stratified_split(...)`
 7. After label-driven assignment, distribute any remaining unassigned sentences (typically O-only) to satisfy overall train size.
 8. Return final train/eval sentence lists.
 
+Method 2 vs Method 3 (direct comparison):
+
+1. Optimization target:
+   - Method 2: heuristic train-coverage-oriented label-aware greedy assignment.
+   - Method 3: explicit per-label train/eval need balancing during assignment.
+2. Label granularity:
+   - Method 2: label-aware helper logic, but not explicit multilabel deficit tracking for every step.
+   - Method 3: each sentence is treated as a multilabel instance and scored against fold deficits of all its labels.
+3. Rare-label handling:
+   - Method 2: tends to protect rare labels in train.
+   - Method 3: processes rare labels first and tries to preserve proportional presence across both folds.
+4. Expected fold behavior:
+   - Method 2: usually better than random for coverage, but proportionality can still be uneven.
+   - Method 3: generally closer to true multilabel stratification and balanced representation in train and eval.
+
+### What Method 2 Is Missing (and Method 3 Adds)
+
+Method 2 (`_label_aware_split`) is useful, but it is still a generic greedy helper. It does **not** explicitly optimize the full multilabel allocation problem sentence-by-sentence with per-label fold deficits.
+
+What Method 3 adds on top of Method 2:
+
+1. **True multilabel view per sentence**: each sentence is treated as a set of labels and allocated by considering all labels it carries simultaneously.
+2. **Rarest-label-first control loop**: assignment order is driven by the rarest still-unassigned labels, which gives minority labels priority during allocation.
+3. **Per-label remaining-need objective**: each assignment compares train/eval demand gaps for the sentence's labels and chooses the fold with greater total need.
+4. **Closer proportional matching by label**: the algorithm directly targets per-label train/eval proportions, rather than only broad label-coverage heuristics.
+5. **More principled behavior for co-occurring labels**: when labels co-appear in the same sentence, Method 3 accounts for their joint effect during assignment.
+
 Why this matters: unlike simple rarity heuristics, this method explicitly targets proportional label representation in both folds and is closer to true multilabel stratification (Sechidis et al., 2011).
+
+### Exp07 Method 4: Multilabel Stratified (Paper-Style Tie-Breaking)
+
+Implementation: `_multilabel_iterative_paper_split(...)`
+
+1. Treat each sentence as a multilabel instance using the set of unique non-O labels in that sentence.
+2. Build per-label sentence index lists and desired train/eval counts from the split ratio (70/30).
+3. Repeatedly select the rarest still-unassigned label.
+4. For candidate sentences containing that label, decide train vs eval with a paper-style priority order:
+   - remaining need for the currently selected rare label,
+   - then remaining fold capacity,
+   - then random tie-break if still tied.
+5. Assign the sentence and immediately update fold counts and per-label counts.
+6. Continue until label-driven assignment is exhausted.
+7. Place any leftover sentences afterward while preserving the overall 70/30 sentence target.
+8. Return final train/eval sentence lists.
+
+What is different from Method 3:
+
+1. Method 3 uses the summed remaining need across all labels in the candidate sentence.
+2. Method 4 gives first priority to the currently selected rare label instead of the sentence's aggregate cross-label deficit.
+3. Method 4 also makes fold capacity an explicit tie-break stage before randomness.
+4. So Method 3 is a more blended aggregate-deficit heuristic, while Method 4 is a more paper-faithful rare-label-first assignment rule.
+
+Why this matters: both methods are multilabel-aware, but they resolve ambiguous assignments differently. Method 4 tests whether the more paper-style tie-breaking policy leads to different downstream behavior than Method 3.
 
 ### Exp07 output artifacts used downstream
 
@@ -265,9 +264,9 @@ This script is the orchestrator that combines models, split conditions, and down
 
 Build one unified condition list from:
 
-1. Exp07 variants (9 conditions typically).
+1. Exp07 variants (4 conditions typically).
 2. Exp08 baseline and augmented (2 conditions).
-3. Exp07+Aug variants (9 conditions typically, if generated).
+3. Exp07+Aug variants (4 conditions typically, if generated).
 
 Each condition defines:
 
@@ -305,7 +304,7 @@ For each selected model, experiment, and condition:
 ## 6) Reviewer Notes (Concise)
 
 1. Exp01 is the common baseline engine and also the execution target for pre-split comparison runs.
-2. Exp07 contributes deterministic split artifacts for eight sentence allocation policies.
+2. Exp07 contributes deterministic split artifacts for four sentence allocation policies.
 3. Exp08 contributes controlled train-only augmentation while preserving eval integrity.
 4. Cross comparison standardizes evaluation by forcing all downstream experiments to consume explicit train/eval JSON pairs.
 5. The pipeline supports resumable long runs via progress checkpointing.

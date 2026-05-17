@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report
 
@@ -44,6 +45,60 @@ def _build_token_level_df(detailed_df: pd.DataFrame) -> pd.DataFrame:
                     "is_correct": true_label == pred_label,
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def _softmax(logits: np.ndarray) -> np.ndarray:
+    stable = logits - np.max(logits)
+    exp_vals = np.exp(stable)
+    return exp_vals / np.sum(exp_vals)
+
+
+def _safe_label_name(label_idx: int, label_list: list[str]) -> str | None:
+    if label_idx == -100:
+        return None
+    if 0 <= int(label_idx) < len(label_list):
+        return label_list[int(label_idx)]
+    return None
+
+
+def _build_token_predictions(eval_ds, trainer, tokenizer, label_list: list[str]) -> pd.DataFrame:
+    """Build per-token predictions with probabilities, entropy, and margin for downstream fusion."""
+    preds, _, _ = trainer.predict(eval_ds)
+    pred_ids = np.argmax(preds, axis=2)
+
+    rows = []
+    for sentence_idx, item in enumerate(eval_ds, start=1):
+        input_ids = item["input_ids"]
+        true_ids = item["labels"]
+        tokens = tokenizer.convert_ids_to_tokens(input_ids)
+
+        token_id = 0
+        for token, true_id, pred_id, token_logits in zip(
+            tokens, true_ids, pred_ids[sentence_idx - 1], preds[sentence_idx - 1]
+        ):
+            true_label = _safe_label_name(int(true_id), label_list)
+            pred_label = _safe_label_name(int(pred_id), label_list)
+            if int(true_id) == -100 or true_label is None or pred_label is None or str(token).startswith("["):
+                continue
+
+            token_id += 1
+            probs = _softmax(np.asarray(token_logits, dtype=np.float64))
+            sorted_probs = np.sort(probs)[::-1]
+
+            rows.append(
+                {
+                    "sentence_id": sentence_idx,
+                    "token_idx": token_id,
+                    "token": str(token),
+                    "true_label": true_label,
+                    "pred_label": pred_label,
+                    "prob": float(np.max(probs)),
+                    "entropy": float(-np.sum(probs * np.log(probs + 1e-10))),
+                    "margin": float(sorted_probs[0] - sorted_probs[1]) if len(sorted_probs) > 1 else 1.0,
+                }
+            )
+
     return pd.DataFrame(rows)
 
 
@@ -151,7 +206,9 @@ def run() -> dict:
         }
     )
     token_df = _build_token_level_df(detailed_df)
+    token_predictions_df = _build_token_predictions(ds_eval, trainer, processor, label_list)
     extra_sheets = _build_extra_sheets(token_df, global_metrics)
+    extra_sheets["token_predictions"] = token_predictions_df
     metrics_file = write_result_excel(
         "exp01",
         "regular_ner_results",

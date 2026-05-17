@@ -66,3 +66,24 @@ models/
 *.json
 *.pkl
 *.pickle
+
+# Saved model artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.h5
+*.joblib
+
+# Saved data artifacts
+*.parquet
+*.feather
+*.npy
+*.npz
+
+# Project data/model output directories
+data/
+models/
+outputs/

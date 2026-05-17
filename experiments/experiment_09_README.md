@@ -24,6 +24,11 @@ of **2 models × 10 data conditions × 4 experiments = 80 trained runs**.
 | Exp04 – AUC Cascaded Pipeline | `<MODEL>` | `<CONDITION>` | `<F1>` |
 | Exp05 – AUC Cascaded + Step3 | `<MODEL>` | `<CONDITION>` | `<F1>` |
 | Exp06 – Fusion (Regular + Cascaded) | `<MODEL>` | `<CONDITION>` | `<F1>` |
+| Exp06_fusion_normalized – Calibrated Fusion | `<MODEL>` | `<CONDITION>` | `<F1>` |
+| Exp06_fusion_entropy – Entropy-Weighted Fusion | `<MODEL>` | `<CONDITION>` | `<F1>` |
+| Exp06_fusion_learned_weights – Learned-Weights Fusion | `<MODEL>` | `<CONDITION>` | `<F1>` |
+| Exp06_fusion_svm – SVM Router Fusion | `<MODEL>` | `<CONDITION>` | `<F1>` |
+| Exp06_fusion_ensemble_rules – Ensemble-Rules Fusion | `<MODEL>` | `<CONDITION>` | `<F1>` |
 
 > **Thesis one-liner (placeholder):**  `<MODEL>` with `<CONDITION>` training data
 > achieved the highest entity-level F1 of `<F1>`, confirming that both model choice
@@ -56,7 +61,12 @@ Previous experiments in this thesis explored these dimensions independently:
 | **Exp04** | Three-step cascaded NER pipeline (entity detection → BIO tagging → type classification) |
 | **Exp05** | Exp04 with Step-3 B/I entity-type reconciliation for consistency |
 | **Exp06** | Fusion: combines Exp01 (regular NER) and Exp04 (cascaded) predictions via confidence arbitration |
-| **Exp07** | Compared 8 sentence-split strategies and found that label-aware splitting improves F1 |
+| **Exp06_fusion_normalized** | Calibrated fusion: applies temperature scaling to regular and cascaded confidences before arbitration |
+| **Exp06_fusion_entropy** | Entropy-weighted fusion: reduces the influence of uncertain predictions before arbitration |
+| **Exp06_fusion_learned_weights** | Learned-weights fusion: learns the best regular-vs-cascaded weighting on training data |
+| **Exp06_fusion_svm** | SVM-router fusion: keeps agreements and learns a disagreement routing rule from training data |
+| **Exp06_fusion_ensemble_rules** | Rule-based fusion: uses agreement and confidence-gap logic rather than plain confidence comparison |
+| **Exp07** | Compared 3 sentence-split strategies and found that label-aware splitting improves F1 |
 | **Exp08** | LLM mask-filling augmentation: generates synthetic training sentences |
 
 **Experiment 09 ties it all together**: it asks *"What happens when we combine
@@ -76,7 +86,7 @@ classification (NER) during each experiment run.
 
 Data conditions come from two sources:
 
-**From Experiment 07 — Sentence-Split Strategies (8 variants):**
+**From Experiment 07 — Sentence-Split Strategies (4 variants):**
 
 Each variant uses the same Hebrew NER dataset but splits sentences into training
 (70%) and evaluation (30%) using a different strategy:
@@ -85,12 +95,8 @@ Each variant uses the same Hebrew NER dataset but splits sentences into training
 |---|---------|----------|
 | 1 | Baseline (simple random) | Random sentence-level split; no label awareness |
 | 2 | Label-aware greedy | Greedy optimization: ensures non-O label distribution in train ≈ full dataset |
-| 3 | Rare-label boosted | Oversamples sentences containing rare entity labels into training |
-| 4 | Inverse-freq weighted | Weights each sentence by the inverse frequency of its labels |
-| 5 | Min-max equalized | Aims to equalize label frequency differences between train and full data |
-| 6 | Inv-freq token-weighted | Like #4, but weights at the token level instead of sentence level |
-| 7 | Inv-freq eval-guaranteed | Like #4, plus guarantees at least one instance of each label in eval |
-| 8 | Inv-freq log-scaled | Inverse-frequency with logarithmic dampening (prevents extreme outlier scores) |
+| 3 | Multilabel stratified | Iterative multilabel stratification preserving per-label proportions in both folds |
+| 4 | Multilabel stratified (paper-style) | Same proportional goal as Method 3, but with paper-style tie-breaking: rare-label need, then fold capacity, then random |
 
 **From Experiment 08 — LLM Data Augmentation (2 conditions):**
 
@@ -109,6 +115,65 @@ Each data condition is tested on four NER architectures:
 | **Exp04** — Cascaded Pipeline | Three-step cascaded NER | Step 1: Is this token an entity? Step 2: BIO tagging. Step 3: Entity type classification. Each step is a separate classifier. |
 | **Exp05** — Cascaded + Step3 Consistency | Exp04 with reconciliation | After Step 3, enforces consistency between B/I tags and entity types (e.g., if B-PER, then I-PER must follow) |
 | **Exp06** — Fusion | Confidence arbitration | Runs Exp01 (regular NER) and Exp04 (cascaded) in parallel, then picks the more confident prediction token-by-token |
+| **Exp06_fusion_normalized** — Calibrated Fusion | Confidence normalization + arbitration | Same as Exp06, but calibrates both confidence sources first so arbitration compares scores on a more compatible scale |
+| **Exp06_fusion_entropy** — Entropy-Weighted Fusion | Uncertainty-aware arbitration | Same as Exp06, but downweights uncertain predictions so high-entropy decisions are less likely to win arbitration |
+| **Exp06_fusion_learned_weights** — Learned-Weights Fusion | Training-learned arbitration | Learns one global regular-vs-cascade weighting from training data and applies that weighting during eval/test arbitration |
+| **Exp06_fusion_svm** — SVM Router Fusion | Meta-learned disagreement arbitration | Keeps agreed labels, and for disagreements uses a linear SVM trained on train-split token features to choose regular vs cascaded prediction |
+| **Exp06_fusion_ensemble_rules** — Ensemble-Rules Fusion | Heuristic arbitration | Uses agreement, confidence-gap, and conservative fallback rules instead of raw confidence alone |
+
+In simple terms, **Learned-Weights Fusion** chooses how much to trust each source model by searching for the best single weighting value on the training split.
+
+It tries many values of $\alpha$ on a grid from 0.00 to 1.00 (inclusive, step 0.01), so there are 101 candidates:
+
+$$
+\alpha \in \{0.00, 0.01, 0.02, \ldots, 0.99, 1.00\}
+$$
+
+For each candidate $\alpha$, token-level fusion is done with one simple rule:
+
+1. If both models predict the same BIO label, keep that agreed label immediately.
+2. If they disagree, compute two weighted confidence scores:
+
+$$
+s_{regular} = \alpha \cdot p_{regular}, \quad
+s_{cascade} = (1-\alpha) \cdot p_{cascade}
+$$
+
+3. Choose the label from the model with the larger weighted score.
+
+After all tokens are fused for that $\alpha$, the method computes entity-level precision/recall/F1 on the training split. The best $\alpha$ is:
+
+$$
+\alpha^* = \arg\max_{\alpha} F1_{train}(\alpha)
+$$
+
+Then that single $\alpha^*$ is frozen and reused for eval/test inference.
+
+Interpretation of the endpoints is useful:
+
+- $\alpha = 1.00$: in disagreements, trust regular NER only.
+- $\alpha = 0.00$: in disagreements, trust cascaded NER only.
+- $0 < \alpha < 1$: compromise between the two.
+
+Quick example for one disagreement token:
+
+- Regular predicts `B-PER` with $p_{regular}=0.62$.
+- Cascade predicts `B-ORG` with $p_{cascade}=0.80$.
+- If $\alpha=0.70$: $0.70\cdot0.62=0.434$ vs $0.30\cdot0.80=0.240$, so choose `B-PER`.
+- If $\alpha=0.30$: $0.30\cdot0.62=0.186$ vs $0.70\cdot0.80=0.560$, so choose `B-ORG`.
+
+So the sweep is effectively selecting the disagreement policy that maximizes full-sequence entity F1, rather than fixing a hand-tuned or arbitrary 50/50 trust split.
+
+Why did the other fusion variants perform worse on average?
+
+- **Raw fusion (`06`)** is simple and sometimes helpful, but it assumes raw confidence scales are already comparable between models; this is often false, so disagreement decisions are noisy.
+- **Calibrated fusion (`06_fusion_normalized`)** improves score comparability, but calibration alone does not learn which source is usually more reliable for this task, so gains are limited.
+- **Entropy-weighted fusion (`06_fusion_entropy`)** helps by discounting uncertain predictions, but entropy is still an indirect signal of correctness and can miss systematic model bias.
+- **Ensemble-rules fusion (`06_fusion_ensemble_rules`)** is interpretable and stronger than raw fusion, yet fixed hand-crafted rules/thresholds are less adaptable than a weight chosen directly to maximize F1.
+
+This pattern matches the observed results in this README: `06_fusion_learned_weights` is the most consistent method (beats both source systems in 10/12 shared comparisons), while the other variants improve some cases but remain less stable across model-condition pairs.
+
+Short description of Exp04: it is the main non-fusion structured alternative to regular NER in this thesis. Instead of predicting the final tag in one shot, it breaks NER into entity detection, BIO boundary prediction, and type classification. That staged design makes Exp04 a useful comparison point on its own and also the cascaded source model that all Exp06 fusion variants are built around.
 
 ---
 
@@ -121,11 +186,11 @@ Each data condition is tested on four NER architectures:
 │              run_cross_data_model_comparison.py          │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  1. Prepare exp07 split files (8 variants)              │
+│  1. Prepare exp07 split files (3 variants)              │
 │  2. Prepare exp08 split files (2 conditions)            │
 │  3. For each MODEL (DictaBERT, BEREL):                  │
 │       For each EXPERIMENT (03, 04, 05, 06):             │
-│         For each DATA CONDITION (10 total):             │
+│         For each DATA CONDITION (5 total):              │
 │           → Set model via THESIS_MODEL_NAME env var     │
 │           → Set data via THESIS_PRESPLIT_* env vars     │
 │           → Call experiment.run()                       │
@@ -154,9 +219,8 @@ outputs/exp07/splits/           outputs/exp08/splits/
 │   train.json / eval.json      ├── baseline_eval.json
 ├── after_label_aware_split_    ├── augmented_train.json
 │   train.json / eval.json      └── augmented_eval.json
-├── after_rare_boosted_...
-├── after_inverse_freq_...
-├── ... (6 more variants)
+├── after_multilabel_stratified_
+│   train.json / eval.json
 │
 └───────────┬───────────────────────┘
             │
@@ -326,6 +390,9 @@ python run_cross_data_model_comparison.py --exp07-source rerun --force-exp08
 # Run only specific experiments
 python run_cross_data_model_comparison.py --experiments 03,04
 
+# Compare original fusion vs calibrated fusion
+python run_cross_data_model_comparison.py --experiments 06,06_fusion_normalized
+
 # Run only DictaBERT
 python run_cross_data_model_comparison.py --models dictabert
 
@@ -343,11 +410,103 @@ python run_cross_data_model_comparison.py --models berel
 | `THESIS_EXP08_FORCE_RERUN` | `0` | Set to `1` to force exp08 regeneration |
 | `THESIS_DEBUG` | `0` | Set to `1` for verbose output |
 
-### 5.4 Expected Runtime
+### 5.4 Why Include Exp06_fusion_normalized
+
+Use `06_fusion_normalized` when Exp06 is close to (or below) Exp01 and you
+suspect the fusion decision is impacted by confidence-scale mismatch.
+
+- Exp06 compares raw confidences from two different pipelines.
+- Exp06_fusion_normalized calibrates both using temperature scaling before arbitration.
+
+Recommended thesis comparison command:
+
+```bash
+python run_cross_data_model_comparison.py --experiments 01,06,06_fusion_normalized --models dictabert,berel
+```
+
+Recommended reporting deltas:
+
+- `delta_f1(06_fusion_normalized - 06)` to isolate normalization gain.
+- `delta_f1(06_fusion_normalized - 01)` to verify whether calibrated fusion beats regular NER.
+
+### 5.5 Fusion Result Summary
+
+The ready-results export (`outputs/cross_comparison/cross_comparison_ready_all_methods_latest.json`) now makes it possible to compare each fusion method directly against the two source systems it is supposed to improve on:
+
+- Exp `01`: Regular NER
+- Exp `04`: AUC Cascaded Pipeline
+
+Across 12 shared model-condition comparisons:
+
+| Fusion method | Beats Exp01 | Beats Exp04 | Beats both source models | Mean delta vs Exp01 | Mean delta vs Exp04 |
+|------|------|------|------|------|------|
+| `06` | 7 / 12 | 7 / 12 | 3 / 12 | +0.0026 | +0.0202 |
+| `06_fusion_normalized` | 6 / 12 | 6 / 12 | 4 / 12 | +0.0000 | +0.0176 |
+| `06_fusion_entropy` | 9 / 12 (+1 tie) | 7 / 12 | 7 / 12 | +0.0101 | +0.0277 |
+| `06_fusion_learned_weights` | 11 / 12 | 10 / 12 | 10 / 12 | +0.0327 | +0.0503 |
+| `06_fusion_ensemble_rules` | 9 / 12 (+1 tie) | 7 / 12 | 6 / 12 | +0.0180 | +0.0356 |
+
+Interpretation:
+
+- Raw fusion (`06`) is only mildly better than the source models.
+- Confidence normalization alone (`06_fusion_normalized`) is not enough to make fusion reliably stronger.
+- Entropy weighting and rule-based arbitration both help, but remain mixed.
+- `06_fusion_learned_weights` is the best current fusion method by a clear margin. It is the only variant that is consistently strong against both source systems, beating both baselines in 10 of 12 comparisons.
+
+The two remaining losses are expected in a realistic fusion setup. Fusion is not an oracle that can always identify which source prediction is correct; it can only use proxy signals such as confidence or a learned global weight. This works well on average, but disagreement cases are precisely the difficult examples where confidence may not track correctness perfectly. Because evaluation is sequence-level F1, even a small number of wrong arbitration decisions on entity boundaries can produce a measurable drop for an otherwise strong fusion rule.
+
+### 5.6 Expected Runtime
 
 Each individual experiment run (one model × one condition × one experiment) takes
 approximately 2–10 minutes depending on hardware. With 80 total runs, expect
 **3–12 hours** on a machine with GPU, or significantly longer on CPU only.
+
+### 5.7 Ready-Results Mode (Skip Retraining)
+
+To avoid retraining all models for every fusion or consistency variant, the
+pipeline supports **ready-results mode**.  The idea:
+
+1. **Train once:** run Exp01 (Regular NER) and Exp04 (Cascaded Pipeline) — these
+   are the only experiments that require GPU training.
+2. **Derive everything else from saved outputs:**
+   - `experiment_05_ready.py` loads Exp04 output and applies the B/I entity-type
+     consistency rule as post-processing — no retraining.
+   - All `experiment_06_*_ready.py` variants load the Exp01 and Exp04 token-level
+     outputs, merge them, and apply their fusion strategy — no retraining.
+
+**Ready experiment IDs** (for `--experiments`):
+
+| ID | File | Strategy |
+|----|------|----------|
+| `05_ready` | `experiment_05_ready.py` | Cascaded + consistency from Exp04 |
+| `06_ready` | `experiment_06_fusion_ready.py` | Confidence comparison |
+| `06_normalized_ready` | `experiment_06_fusion_normalized_ready.py` | Temperature-calibrated |
+| `06_entropy_ready` | `experiment_06_fusion_entropy_ready.py` | Entropy-weighted |
+| `06_learned_ready` | `experiment_06_fusion_learned_weights_ready.py` | Learned alpha weights |
+| `06_ensemble_ready` | `experiment_06_fusion_ensemble_rules_ready.py` | Rule-based ensemble |
+| `06_svm_ready` | `experiment_06_fusion_svm_ready.py` | SVM disagreement router |
+
+**Quick-start: train once, then iterate on fusion rules:**
+
+```bash
+# Step 1 — train the two base models (slow, once per split)
+python run_cross_data_model_comparison.py --experiments 01,04
+
+# Step 2 — run ALL fusion variants on ready outputs (fast, seconds each)
+python run_cross_data_model_comparison.py --experiments 05_ready,06_ready,06_normalized_ready,06_entropy_ready,06_learned_ready,06_ensemble_ready,06_svm_ready
+```
+
+**Environment variables for explicit source paths:**
+
+| Variable | Default resolution | Description |
+|----------|-------------------|-------------|
+| `THESIS_READY_EXP01_XLSX` | `outputs/exp01/latest.json → metrics_file` | Exp01 output with `token_predictions` sheet |
+| `THESIS_READY_EXP04_XLSX` | `outputs/exp04/latest.json → metrics_file` | Exp04 cascaded pipeline output |
+| `THESIS_READY_EXP05_XLSX` | `outputs/exp05/latest.json → metrics_file` | Exp05 output (if using exp05 as cascade source) |
+
+**Important**: Exp01 must be rerun with the updated code that saves the
+`token_predictions` sheet (with `prob`, `entropy`, `margin` columns).  Old Exp01
+outputs without this sheet will produce an error.
 
 ---
 

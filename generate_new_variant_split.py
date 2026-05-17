@@ -1,13 +1,14 @@
 """
-generate_new_variant_split.py — Generate only the new multilabel-stratified
-split and patch split_meta.json so cross-comparison can pick it up.
+generate_new_variant_split.py — Generate only Split 4 (paper-style iterative
+multilabel stratification) and patch split_meta.json so comparison scripts can
+pick it up.
 
 Usage:
     python generate_new_variant_split.py
 
 This does NOT retrain anything. It only:
 1. Loads the NER dataset.
-2. Runs the new _multilabel_stratified_split at seed 42 and 70/30 ratio.
+2. Runs the new _multilabel_iterative_paper_split at seed 42 and 70/30 ratio.
 3. Saves the train/eval JSON files into outputs/exp07/splits/.
 4. Patches split_meta.json to include the new variant.
 """
@@ -23,8 +24,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "core"))
 
 from split_io import save_split, get_splits_dir
 from experiment_07_sentence_split_strategy import (
-    _multilabel_stratified_split,
-    VARIANT_MULTILABEL_STRATIFIED,
+    _multilabel_iterative_paper_split,
+    VARIANT_MULTILABEL_ITERATIVE_PAPER,
     VARIANT_DESCRIPTIONS,
     THESIS_LABELS,
 )
@@ -45,12 +46,12 @@ def main() -> None:
 
     seed = 42
     split_ratio = 0.7
-    print(f"Running multilabel stratified split (seed={seed}, ratio={split_ratio})...")
-    train, eval_ = _multilabel_stratified_split(sentences, split_ratio, seed)
+    print(f"Running Split 4 paper-style iterative split (seed={seed}, ratio={split_ratio})...")
+    train, eval_ = _multilabel_iterative_paper_split(sentences, split_ratio, seed)
     print(f"  Train: {len(train)} sentences, Eval: {len(eval_)} sentences")
 
     splits_dir = get_splits_dir()
-    safe_name = VARIANT_MULTILABEL_STRATIFIED.replace(" ", "_")
+    safe_name = VARIANT_MULTILABEL_ITERATIVE_PAPER.replace(" ", "_")
     train_file = f"{safe_name}_train.json"
     eval_file = f"{safe_name}_eval.json"
 
@@ -71,12 +72,12 @@ def main() -> None:
     variants = meta.get("variants", [])
 
     # Remove old entry if present (idempotent re-run)
-    variants = [v for v in variants if v.get("variant") != VARIANT_MULTILABEL_STRATIFIED]
+    variants = [v for v in variants if v.get("variant") != VARIANT_MULTILABEL_ITERATIVE_PAPER]
 
     variants.append({
-        "variant": VARIANT_MULTILABEL_STRATIFIED,
-        "label": THESIS_LABELS[VARIANT_MULTILABEL_STRATIFIED],
-        "description": VARIANT_DESCRIPTIONS[VARIANT_MULTILABEL_STRATIFIED],
+        "variant": VARIANT_MULTILABEL_ITERATIVE_PAPER,
+        "label": THESIS_LABELS[VARIANT_MULTILABEL_ITERATIVE_PAPER],
+        "description": VARIANT_DESCRIPTIONS[VARIANT_MULTILABEL_ITERATIVE_PAPER],
         "f1_mean": None,  # not yet trained
         "train_file": train_file,
         "eval_file": eval_file,

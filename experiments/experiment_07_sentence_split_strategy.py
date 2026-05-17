@@ -8,16 +8,11 @@ Motivation
 ----------
 In NER datasets with many rare entity types, a naive random split can leave the
 training set without examples of some labels, hurting F1.  This experiment
-compares eight strategies for allocating sentences to train vs eval:
+compares three strategies for allocating sentences to train vs eval:
 
 1. **Baseline** — simple random shuffle.
 2. **Label-aware greedy** — minimise squared deviation from target label counts.
-3. **Rare-label boosted** — force sentences containing rare labels into train.
-4. **Inverse-freq weighted** — score sentences by label rarity (presence-based).
-5. **Min-max equalized** — greedily maximise the minimum per-label train ratio.
-6. **Inv-freq token-weighted** — like (4) but weights by token count, not presence.
-7. **Inv-freq eval-guaranteed** — reserve 1 sentence per label for eval first.
-8. **Inv-freq log-scaled** — dampened weighting with log(1 + max_freq/count).
+3. **Multilabel stratified** — iterative stratification (Sechidis et al., 2011).
 
 Each strategy is trained with 5 random seeds and metrics are aggregated as
 mean ± std.  After all variants are evaluated, the baseline and best-variant
@@ -76,41 +71,31 @@ except Exception:  # pragma: no cover - optional defensive import
 
 BEFORE_VARIANT = "before_exp01_baseline"
 AFTER_VARIANT = "after_label_aware_split"
-VARIANT_RARE_BOOSTED = "after_rare_boosted"
-VARIANT_INVERSE_FREQ = "after_inverse_freq_weighted"
-VARIANT_MINMAX_EQUAL = "after_minmax_equalized"
-VARIANT_INV_FREQ_TOKEN = "after_inverse_freq_token_weighted"
-VARIANT_INV_FREQ_EVAL_GUAR = "after_inverse_freq_eval_guaranteed"
-VARIANT_INV_FREQ_LOG = "after_inverse_freq_log_scaled"
 VARIANT_MULTILABEL_STRATIFIED = "after_multilabel_stratified"
+VARIANT_MULTILABEL_ITERATIVE_PAPER = "after_multilabel_iterative_paper"
 
 BEFORE_DESCRIPTION = "Regular NER with DictaBERT"
 AFTER_DESCRIPTION = "Statistical stratified sentence split preserving non-O label distribution (with best-effort train coverage)"
 
-ALL_VARIANTS = [BEFORE_VARIANT, AFTER_VARIANT, VARIANT_RARE_BOOSTED, VARIANT_INVERSE_FREQ, VARIANT_MINMAX_EQUAL, VARIANT_INV_FREQ_TOKEN, VARIANT_INV_FREQ_EVAL_GUAR, VARIANT_INV_FREQ_LOG, VARIANT_MULTILABEL_STRATIFIED]
+ALL_VARIANTS = [
+    BEFORE_VARIANT,
+    AFTER_VARIANT,
+    VARIANT_MULTILABEL_STRATIFIED,
+    VARIANT_MULTILABEL_ITERATIVE_PAPER,
+]
 
 VARIANT_DESCRIPTIONS = {
     BEFORE_VARIANT: BEFORE_DESCRIPTION,
     AFTER_VARIANT: AFTER_DESCRIPTION,
-    VARIANT_RARE_BOOSTED: "Rare-label boosted: all sentences with rare labels forced into train first",
-    VARIANT_INVERSE_FREQ: "Inverse-frequency weighted: rare-label-rich sentences prioritized for train",
-    VARIANT_MINMAX_EQUAL: "Min-max equalized: greedily maximize minimum per-label coverage ratio in train",
-    VARIANT_INV_FREQ_TOKEN: "Inverse-freq token-weighted: score by token counts not just label presence",
-    VARIANT_INV_FREQ_EVAL_GUAR: "Inverse-freq eval-guaranteed: reserve 1 sentence per label for eval first",
-    VARIANT_INV_FREQ_LOG: "Log-scaled inverse-freq: log(1+max/count) dampens extreme rare-label weights",
     VARIANT_MULTILABEL_STRATIFIED: "Iterative multilabel stratification (Sechidis et al., 2011): distributes each label proportionally across train/eval",
+    VARIANT_MULTILABEL_ITERATIVE_PAPER: "Paper-style iterative stratification: rarest-label-first with tie-breaks by per-label need, then fold capacity, then random",
 }
 
 THESIS_LABELS = {
     BEFORE_VARIANT: "Baseline (simple random split)",
     AFTER_VARIANT: "Label-aware greedy",
-    VARIANT_RARE_BOOSTED: "Rare-label boosted",
-    VARIANT_INVERSE_FREQ: "Inverse-freq weighted",
-    VARIANT_MINMAX_EQUAL: "Min-max equalized",
-    VARIANT_INV_FREQ_TOKEN: "Inv-freq token-weighted",
-    VARIANT_INV_FREQ_EVAL_GUAR: "Inv-freq eval-guaranteed",
-    VARIANT_INV_FREQ_LOG: "Inv-freq log-scaled",
     VARIANT_MULTILABEL_STRATIFIED: "Multilabel stratified",
+    VARIANT_MULTILABEL_ITERATIVE_PAPER: "Multilabel stratified (paper-style)",
 }
 
 
@@ -172,6 +157,55 @@ def _sentence_non_o_label_counts(sentence: dict) -> dict[str, int]:
             continue
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def _enforce_sentence_ratio(
+    train_sentences: list[dict],
+    eval_sentences: list[dict],
+    split_ratio: float,
+    seed: int,
+) -> tuple[list[dict], list[dict]]:
+    """Rebalance sentence counts to exactly match the requested split ratio.
+
+    Some label-aware allocators can drift from the target ratio while trying to
+    satisfy label constraints. This post-step preserves their allocation as much
+    as possible while enforcing deterministic train/eval sizes.
+    """
+    total = len(train_sentences) + len(eval_sentences)
+    if total <= 1:
+        return train_sentences, eval_sentences
+
+    target_train = max(1, min(total - 1, int(total * split_ratio)))
+    current_train = len(train_sentences)
+    if current_train == target_train:
+        return train_sentences, eval_sentences
+
+    rng = random.Random(seed)
+
+    def _move_candidates(items: list[dict]) -> list[int]:
+        # Move sentences with fewer non-O tokens first to minimize label impact.
+        scored: list[tuple[int, int, float, int]] = []
+        for idx, sent in enumerate(items):
+            non_o_counts = _sentence_non_o_label_counts(sent)
+            non_o_token_count = sum(non_o_counts.values())
+            unique_non_o_labels = len(non_o_counts)
+            scored.append((non_o_token_count, unique_non_o_labels, rng.random(), idx))
+        scored.sort()
+        return [idx for _, _, _, idx in scored]
+
+    train = list(train_sentences)
+    eval_ = list(eval_sentences)
+
+    if len(train) > target_train:
+        need_to_move = len(train) - target_train
+        for idx in sorted(_move_candidates(train)[:need_to_move], reverse=True):
+            eval_.append(train.pop(idx))
+    else:
+        need_to_move = target_train - len(train)
+        for idx in sorted(_move_candidates(eval_)[:need_to_move], reverse=True):
+            train.append(eval_.pop(idx))
+
+    return train, eval_
 
 
 def _label_distribution_report(train_sentences: list[dict], eval_sentences: list[dict]) -> pd.DataFrame:
@@ -262,310 +296,8 @@ def _simple_random_split(sentences: list[dict], split_ratio: float, seed: int) -
 
 def _label_aware_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
     """Wrapper for tf.split_list with label coverage."""
-    return tf.split_list(sentences, split_ratio=split_ratio, seed=seed, ensure_label_coverage=True)
-
-
-def _rare_label_boosted_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Force all sentences containing rare labels (≤ median frequency) into train.
-
-    Remaining capacity is filled randomly from non-rare sentences.
-    Rare labels are defined as those with total token count at or below the
-    median across all non-O labels.
-    """
-    items = list(sentences)
-    if not items:
-        return [], []
-    if len(items) == 1:
-        return items, []
-
-    rng = random.Random(seed)
-    target_train_count = max(1, min(len(items) - 1, int(len(items) * split_ratio)))
-
-    global_counts = _non_o_label_counts(items)
-    if not global_counts:
-        return _simple_random_split(items, split_ratio, seed)
-
-    counts_series = pd.Series(list(global_counts.values()))
-    median_threshold = float(counts_series.median())
-    rare_labels = {label for label, count in global_counts.items() if count <= median_threshold}
-
-    rare_indices: set[int] = set()
-    non_rare_indices: set[int] = set()
-    for i, sentence in enumerate(items):
-        sentence_labels = _non_o_labels_in_sentence(sentence)
-        if sentence_labels & rare_labels:
-            rare_indices.add(i)
-        else:
-            non_rare_indices.add(i)
-
-    train_indices = set(rare_indices)
-    if len(train_indices) > target_train_count:
-        train_indices = set(rng.sample(sorted(train_indices), target_train_count))
-    elif len(train_indices) < target_train_count:
-        remaining_needed = target_train_count - len(train_indices)
-        available = sorted(non_rare_indices - train_indices)
-        rng.shuffle(available)
-        train_indices.update(available[:remaining_needed])
-
-    train = [items[i] for i in range(len(items)) if i in train_indices]
-    eval_ = [items[i] for i in range(len(items)) if i not in train_indices]
-    return train, eval_
-
-
-def _inverse_freq_weighted_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Score each sentence by the sum of inverse label frequencies (presence-based).
-
-    For each unique non-O label in a sentence the score contribution is
-    ``max_freq / global_count(label)``.  Sentences with the highest total
-    scores are placed into the training set.
-    """
-    items = list(sentences)
-    if not items:
-        return [], []
-    if len(items) == 1:
-        return items, []
-
-    rng = random.Random(seed)
-    target_train_count = max(1, min(len(items) - 1, int(len(items) * split_ratio)))
-
-    global_counts = _non_o_label_counts(items)
-    if not global_counts:
-        return _simple_random_split(items, split_ratio, seed)
-
-    max_freq = max(global_counts.values())
-
-    scored: list[tuple[int, float]] = []
-    for i, sentence in enumerate(items):
-        sentence_labels = _non_o_labels_in_sentence(sentence)
-        if not sentence_labels:
-            score = 0.0
-        else:
-            score = sum(max_freq / global_counts.get(label, max_freq) for label in sentence_labels)
-        scored.append((i, score + rng.random() * 1e-6))
-
-    scored.sort(key=lambda x: -x[1])
-
-    train_indices = {idx for idx, _ in scored[:target_train_count]}
-    train = [items[i] for i in range(len(items)) if i in train_indices]
-    eval_ = [items[i] for i in range(len(items)) if i not in train_indices]
-    return train, eval_
-
-
-def _minmax_equalized_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Greedily maximise the minimum per-label coverage ratio in train.
-
-    At each step, the sentence that raises the lowest label-coverage ratio
-    most is selected for the training set.  This aims for the most balanced
-    label representation across all entity types.
-    """
-    items = list(sentences)
-    if not items:
-        return [], []
-    if len(items) == 1:
-        return items, []
-
-    rng = random.Random(seed)
-    rng.shuffle(items)
-    target_train_count = max(1, min(len(items) - 1, int(len(items) * split_ratio)))
-
-    label_counts_per_item = [_sentence_non_o_label_counts(item) for item in items]
-    global_counts: dict[str, int] = {}
-    for item_counts in label_counts_per_item:
-        for label, count in item_counts.items():
-            global_counts[label] = global_counts.get(label, 0) + count
-
-    if not global_counts:
-        return items[:target_train_count], items[target_train_count:]
-
-    target_counts = {label: max(1.0, total * split_ratio) for label, total in global_counts.items()}
-    selected_indices: set[int] = set()
-    current_counts = {label: 0 for label in global_counts}
-
-    while len(selected_indices) < target_train_count:
-        best_idx: int | None = None
-        best_min_ratio: float | None = None
-
-        for idx in range(len(items)):
-            if idx in selected_indices:
-                continue
-
-            item_counts = label_counts_per_item[idx]
-            trial_counts = dict(current_counts)
-            for label, add in item_counts.items():
-                trial_counts[label] = trial_counts.get(label, 0) + add
-
-            min_ratio = min(trial_counts.get(label, 0) / target for label, target in target_counts.items())
-            score = min_ratio + rng.random() * 1e-9
-
-            if best_min_ratio is None or score > best_min_ratio:
-                best_min_ratio = score
-                best_idx = idx
-
-        if best_idx is None:
-            break
-
-        selected_indices.add(best_idx)
-        for label, add in label_counts_per_item[best_idx].items():
-            current_counts[label] = current_counts.get(label, 0) + add
-
-    train = [items[i] for i in range(len(items)) if i in selected_indices]
-    eval_ = [items[i] for i in range(len(items)) if i not in selected_indices]
-    return train, eval_
-
-
-def _inverse_freq_token_weighted_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Like inverse-freq but weight by **token count** per sentence, not just presence.
-
-    Score contribution for label *l* in a sentence is
-    ``count_of_l_in_sentence × (max_freq / global_count(l))``.
-    A sentence with 5 rare-label tokens ranks higher than one with 1.
-    """
-    items = list(sentences)
-    if not items:
-        return [], []
-    if len(items) == 1:
-        return items, []
-
-    rng = random.Random(seed)
-    target_train_count = max(1, min(len(items) - 1, int(len(items) * split_ratio)))
-
-    global_counts = _non_o_label_counts(items)
-    if not global_counts:
-        return _simple_random_split(items, split_ratio, seed)
-
-    max_freq = max(global_counts.values())
-
-    scored: list[tuple[int, float]] = []
-    for i, sentence in enumerate(items):
-        token_counts = _sentence_non_o_label_counts(sentence)
-        if not token_counts:
-            score = 0.0
-        else:
-            score = sum(
-                count * (max_freq / global_counts.get(label, max_freq))
-                for label, count in token_counts.items()
-            )
-        scored.append((i, score + rng.random() * 1e-6))
-
-    scored.sort(key=lambda x: -x[1])
-
-    train_indices = {idx for idx, _ in scored[:target_train_count]}
-    train = [items[i] for i in range(len(items)) if i in train_indices]
-    eval_ = [items[i] for i in range(len(items)) if i not in train_indices]
-    return train, eval_
-
-
-def _inverse_freq_eval_guaranteed_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Two-phase split: guarantee eval coverage, then fill train by rarity.
-
-    Phase 1 — Greedily reserve one sentence per label for eval (rarest labels
-    first) so that seqeval can compute per-label metrics.
-    Phase 2 — Score remaining sentences by inverse label frequency and fill
-    train with the highest-scoring sentences.
-    """
-    items = list(sentences)
-    if not items:
-        return [], []
-    if len(items) == 1:
-        return items, []
-
-    rng = random.Random(seed)
-    target_train_count = max(1, min(len(items) - 1, int(len(items) * split_ratio)))
-
-    global_counts = _non_o_label_counts(items)
-    if not global_counts:
-        return _simple_random_split(items, split_ratio, seed)
-
-    # Phase 1: reserve one sentence per label for eval (greedy, rarest labels first)
-    all_labels = set(global_counts.keys())
-    eval_reserved: set[int] = set()
-    labels_covered_in_eval: set[str] = set()
-
-    # Sort labels by rarity (rarest first) for greedy coverage
-    sorted_labels = sorted(all_labels, key=lambda lb: global_counts.get(lb, 0))
-    shuffled_indices = list(range(len(items)))
-    rng.shuffle(shuffled_indices)
-
-    for target_label in sorted_labels:
-        if target_label in labels_covered_in_eval:
-            continue
-        for idx in shuffled_indices:
-            if idx in eval_reserved:
-                continue
-            if target_label in _non_o_labels_in_sentence(items[idx]):
-                eval_reserved.add(idx)
-                labels_covered_in_eval.update(_non_o_labels_in_sentence(items[idx]))
-                break
-
-    # Phase 2: score remaining sentences by inverse-freq, fill train
-    max_freq = max(global_counts.values())
-    remaining_indices = [i for i in range(len(items)) if i not in eval_reserved]
-
-    scored: list[tuple[int, float]] = []
-    for i in remaining_indices:
-        sentence_labels = _non_o_labels_in_sentence(items[i])
-        if not sentence_labels:
-            score = 0.0
-        else:
-            score = sum(max_freq / global_counts.get(label, max_freq) for label in sentence_labels)
-        scored.append((i, score + rng.random() * 1e-6))
-
-    scored.sort(key=lambda x: -x[1])
-
-    # Take top-scoring sentences for train, up to target count
-    train_indices: set[int] = set()
-    for idx, _ in scored:
-        if len(train_indices) >= target_train_count:
-            break
-        train_indices.add(idx)
-
-    train = [items[i] for i in range(len(items)) if i in train_indices]
-    eval_ = [items[i] for i in range(len(items)) if i not in train_indices]
-    return train, eval_
-
-
-def _inverse_freq_log_scaled_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Log-dampened inverse-freq scoring: ``log(1 + max_freq / count)``.
-
-    Compared to linear inverse-freq, this dampens extreme weights from very
-    rare labels (e.g. a label appearing 2× vs 200× is scored ~3.6:1 instead
-    of 100:1), leading to a smoother distribution of sentence scores.
-    """
-    import math
-
-    items = list(sentences)
-    if not items:
-        return [], []
-    if len(items) == 1:
-        return items, []
-
-    rng = random.Random(seed)
-    target_train_count = max(1, min(len(items) - 1, int(len(items) * split_ratio)))
-
-    global_counts = _non_o_label_counts(items)
-    if not global_counts:
-        return _simple_random_split(items, split_ratio, seed)
-
-    max_freq = max(global_counts.values())
-
-    scored: list[tuple[int, float]] = []
-    for i, sentence in enumerate(items):
-        sentence_labels = _non_o_labels_in_sentence(sentence)
-        if not sentence_labels:
-            score = 0.0
-        else:
-            score = sum(
-                math.log(1.0 + max_freq / global_counts.get(label, max_freq))
-                for label in sentence_labels
-            )
-        scored.append((i, score + rng.random() * 1e-6))
-
-    scored.sort(key=lambda x: -x[1])
-
-    train_indices = {idx for idx, _ in scored[:target_train_count]}
-    train = [items[i] for i in range(len(items)) if i in train_indices]
-    eval_ = [items[i] for i in range(len(items)) if i not in train_indices]
-    return train, eval_
+    train, eval_ = tf.split_list(sentences, split_ratio=split_ratio, seed=seed, ensure_label_coverage=True)
+    return _enforce_sentence_ratio(train, eval_, split_ratio, seed)
 
 
 def _multilabel_stratified_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
@@ -662,19 +394,118 @@ def _multilabel_stratified_split(sentences: list[dict], split_ratio: float, seed
 
     train = [items[i] for i in range(len(items)) if assignments[i] == 0]
     eval_ = [items[i] for i in range(len(items)) if assignments[i] == 1]
-    return train, eval_
+    return _enforce_sentence_ratio(train, eval_, split_ratio, seed)
+
+
+def _multilabel_iterative_paper_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
+    """Paper-style iterative stratification (Sechidis et al., 2011 inspired).
+
+    Differences vs the existing multilabel stratified implementation:
+    1. Priority label is chosen among labels with fewest remaining unassigned
+       examples (random tie-break).
+    2. Example assignment tie-breaks first by per-label remaining target,
+       then by subset total remaining capacity, then random.
+    """
+    items = list(sentences)
+    n_items = len(items)
+    if n_items == 0:
+        return [], []
+    if n_items == 1:
+        return items, []
+
+    rng = random.Random(seed)
+
+    # Build label sets per sentence (unique non-O labels)
+    label_sets: list[frozenset[str]] = []
+    for item in items:
+        labels = item.get("labels", []) if isinstance(item, dict) else []
+        non_o = frozenset(str(lb) for lb in labels if str(lb) != "O")
+        label_sets.append(non_o)
+
+    all_labels = sorted(set().union(*label_sets)) if label_sets else []
+    if not all_labels:
+        return _simple_random_split(items, split_ratio, seed)
+
+    # Exact fold capacity targets (train/eval)
+    train_target = max(1, min(n_items - 1, int(n_items * split_ratio)))
+    eval_target = n_items - train_target
+    remaining_total = [float(train_target), float(eval_target)]
+
+    # Per-label desired counts per fold
+    label_to_indices: dict[str, list[int]] = {lb: [] for lb in all_labels}
+    for i, ls in enumerate(label_sets):
+        for lb in ls:
+            label_to_indices[lb].append(i)
+
+    remaining_label_target: dict[str, list[float]] = {}
+    for lb in all_labels:
+        n_lb = len(label_to_indices[lb])
+        remaining_label_target[lb] = [n_lb * split_ratio, n_lb * (1.0 - split_ratio)]
+
+    assignments = [-1] * n_items  # -1 unassigned, 0 train, 1 eval
+
+    while True:
+        unassigned_idx = [i for i, a in enumerate(assignments) if a == -1]
+        if not unassigned_idx:
+            break
+
+        # Remaining counts per label among unassigned examples
+        rem_counts: dict[str, int] = {}
+        for i in unassigned_idx:
+            for lb in label_sets[i]:
+                rem_counts[lb] = rem_counts.get(lb, 0) + 1
+
+        positive_labels = [lb for lb, cnt in rem_counts.items() if cnt > 0]
+        if not positive_labels:
+            # Remaining are O-only sentences; place by remaining fold capacity.
+            for i in unassigned_idx:
+                if remaining_total[0] > remaining_total[1]:
+                    chosen_fold = 0
+                elif remaining_total[1] > remaining_total[0]:
+                    chosen_fold = 1
+                else:
+                    chosen_fold = rng.choice([0, 1])
+                assignments[i] = chosen_fold
+                remaining_total[chosen_fold] -= 1.0
+            break
+
+        # Priority label: fewest remaining examples, random tie-break.
+        min_count = min(rem_counts[lb] for lb in positive_labels)
+        tied = [lb for lb in positive_labels if rem_counts[lb] == min_count]
+        priority_label = rng.choice(tied)
+
+        # Process all currently-unassigned examples containing priority label.
+        candidate_indices = [i for i in label_to_indices[priority_label] if assignments[i] == -1]
+        rng.shuffle(candidate_indices)
+        for i in candidate_indices:
+            # Tie-break 1: maximize remaining target for priority label
+            label_needs = remaining_label_target[priority_label]
+            max_label_need = max(label_needs)
+            best_folds = [f for f in (0, 1) if label_needs[f] == max_label_need]
+
+            # Tie-break 2: among best folds, maximize remaining total capacity
+            if len(best_folds) > 1:
+                max_total_need = max(remaining_total[f] for f in best_folds)
+                best_folds = [f for f in best_folds if remaining_total[f] == max_total_need]
+
+            # Tie-break 3: random
+            chosen_fold = best_folds[0] if len(best_folds) == 1 else rng.choice(best_folds)
+
+            assignments[i] = chosen_fold
+            remaining_total[chosen_fold] -= 1.0
+            for lb in label_sets[i]:
+                remaining_label_target[lb][chosen_fold] -= 1.0
+
+    train = [items[i] for i in range(n_items) if assignments[i] == 0]
+    eval_ = [items[i] for i in range(n_items) if assignments[i] == 1]
+    return _enforce_sentence_ratio(train, eval_, split_ratio, seed)
 
 
 SPLIT_FNS = {
     BEFORE_VARIANT: _simple_random_split,
     AFTER_VARIANT: _label_aware_split,
-    VARIANT_RARE_BOOSTED: _rare_label_boosted_split,
-    VARIANT_INVERSE_FREQ: _inverse_freq_weighted_split,
-    VARIANT_MINMAX_EQUAL: _minmax_equalized_split,
-    VARIANT_INV_FREQ_TOKEN: _inverse_freq_token_weighted_split,
-    VARIANT_INV_FREQ_EVAL_GUAR: _inverse_freq_eval_guaranteed_split,
-    VARIANT_INV_FREQ_LOG: _inverse_freq_log_scaled_split,
     VARIANT_MULTILABEL_STRATIFIED: _multilabel_stratified_split,
+    VARIANT_MULTILABEL_ITERATIVE_PAPER: _multilabel_iterative_paper_split,
 }
 
 
@@ -1072,6 +903,86 @@ def _records_for_json(df: pd.DataFrame) -> list[dict[str, Any]]:
     return normalized.to_dict(orient="records")
 
 
+def _variant_label_table_sheet_name(variant_key: str) -> str:
+    if variant_key == BEFORE_VARIANT:
+        return "label_table_baseline"
+    if variant_key == AFTER_VARIANT:
+        return "label_table_label_aware"
+    if variant_key == VARIANT_MULTILABEL_STRATIFIED:
+        return "label_table_multilabel"
+    if variant_key == VARIANT_MULTILABEL_ITERATIVE_PAPER:
+        return "label_table_ml_paper"
+    return f"label_table_{variant_key}"[:31]
+
+
+def _build_label_summary_tables(detailed_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Build one summary table per split variant from label_distribution_details.
+
+    Each table reports per-label mean counts across seeds and derived percentages.
+    """
+    if detailed_df.empty:
+        return {}
+
+    tables: dict[str, pd.DataFrame] = {}
+
+    for variant_key in ALL_VARIANTS:
+        subset = detailed_df[detailed_df["variant"] == variant_key].copy()
+        if subset.empty:
+            continue
+
+        grouped = (
+            subset.groupby("label", as_index=False)[
+                ["full_token_count", "train_token_count", "eval_token_count"]
+            ]
+            .mean()
+        )
+
+        full_total = float(grouped["full_token_count"].sum())
+        train_total = float(grouped["train_token_count"].sum())
+        test_total = float(grouped["eval_token_count"].sum())
+
+        rows: list[dict[str, Any]] = []
+        for _, row in grouped.sort_values("label").iterrows():
+            label = str(row["label"])
+            full_count = float(row["full_token_count"])
+            train_count = float(row["train_token_count"])
+            test_count = float(row["eval_token_count"])
+
+            train_ratio = (train_count / test_count) if test_count > 0 else None
+
+            rows.append(
+                {
+                    "Label": label,
+                    "Full Count": round(full_count, 1),
+                    "Full %": round((100.0 * full_count / full_total), 2) if full_total > 0 else None,
+                    "Train Count": round(train_count, 1),
+                    "Train %": round((100.0 * train_count / full_count), 2) if full_count > 0 else None,
+                    "Test Count": round(test_count, 1),
+                    "Test %": round((100.0 * test_count / full_count), 2) if full_count > 0 else None,
+                    "Train/Test Ratio": round(train_ratio, 2) if train_ratio is not None else "N/A",
+                }
+            )
+
+        rows.append(
+            {
+                "Label": "TOTAL",
+                "Full Count": round(full_total, 1),
+                "Full %": 100.0 if full_total > 0 else None,
+                "Train Count": round(train_total, 1),
+                "Train %": round((100.0 * train_total / full_total), 2) if full_total > 0 else None,
+                "Test Count": round(test_total, 1),
+                "Test %": round((100.0 * test_total / full_total), 2) if full_total > 0 else None,
+                "Train/Test Ratio": "",
+            }
+        )
+
+        table_df = pd.DataFrame(rows)
+        sheet_name = _variant_label_table_sheet_name(variant_key)
+        tables[sheet_name] = table_df
+
+    return tables
+
+
 def run() -> dict:
     dataset_override = (os.environ.get("THESIS_NER_CSV") or "").strip()
     dataset_path = Path(dataset_override) if dataset_override else resolve_dataset("ner_dataset.csv")
@@ -1148,6 +1059,7 @@ def run() -> dict:
     rare_df = pd.concat(rare_sheet_rows, ignore_index=True)
     train_only_df = pd.concat(train_only_rows, ignore_index=True)
     eval_only_df = pd.concat(eval_only_rows, ignore_index=True)
+    label_summary_tables = _build_label_summary_tables(detailed_df)
 
     baseline_train = first_seed_train_sets.get(BEFORE_VARIANT, [])
     best_after_key = AFTER_VARIANT
@@ -1220,6 +1132,7 @@ def run() -> dict:
             "rare_labels_q1": rare_df,
             "train_only_labels": train_only_df,
             "eval_only_labels": eval_only_df,
+            **label_summary_tables,
             "documentation": build_thesis_documentation_df(
                 "exp07",
                 "Sentence Split Strategy Comparison",

@@ -1,4 +1,4 @@
-# Experiment 07 — Sentence Split Strategy Comparison
+# Experiment 07 â€” Sentence Split Strategy Comparison
 
 ## What This Experiment Does
 
@@ -15,7 +15,7 @@ problem:
 - after a random split, the training set may contain too few examples of the rare labels
 - the evaluation set may become easier or harder just because of the split
 
-So Experiment 07 compares **9 different sentence-level splitting methods**.
+So Experiment 07 compares **4 different sentence-level splitting methods**.
 Each method creates a 70% training set and a 30% evaluation set, but each one
 chooses the sentences in a different way.
 
@@ -63,7 +63,7 @@ other half in eval.
 
 ### 2. Non-O Labels Matter Most
 
-In BIO tagging, the label `O` means “not an entity”.
+In BIO tagging, the label `O` means â€œnot an entityâ€.
 
 Example:
 
@@ -82,7 +82,7 @@ That is why most methods in this experiment focus on the distribution of
 
 A central idea in this experiment is:
 
-> The training set should “look like” the full dataset as much as possible.
+> The training set should â€œlook likeâ€ the full dataset as much as possible.
 
 For example, if the full dataset contains:
 
@@ -95,7 +95,7 @@ then a good training split should have similar proportions.
 
 ---
 
-## The 9 Methods — Simple Explanations
+## The 4 Methods â€” Simple Explanations
 
 ## 1. Baseline (Simple Random)
 
@@ -156,7 +156,7 @@ This method tries to build the training set so that the distribution of
    closer to the full-dataset distribution.
 5. Stop when the training set reaches 70% of the sentences.
 
-### Why it is called “greedy”
+### Why it is called â€œgreedyâ€
 
 Because at each step it makes the **best local choice available at that moment**.
 It does not test every possible combination of sentences.
@@ -177,270 +177,7 @@ more attractive and is more likely to be added.
 
 ---
 
-## 3. Rare-Label Boosted
-
-### Main idea
-
-This method gives extra importance to sentences that contain **rare labels**.
-
-### How it works
-
-1. Compute how common or rare each label is.
-2. Give higher score to rare labels.
-3. Score each sentence based on the rare labels it contains.
-4. Prefer high-scoring sentences for training.
-
-### Why it helps
-
-Rare labels are exactly the labels that models usually fail on.
-If we make sure training contains more of them, the model gets a better chance
-to learn them.
-
-### Beginner example
-
-Sentence A contains:
-- `B-PER`, `I-PER` (common)
-
-Sentence B contains:
-- `B-CER`, `I-CER` (rare)
-
-This method will prefer Sentence B more than a normal random or balanced split,
-because it contains information the model is less likely to see elsewhere.
-
-### Risk
-
-If we push too hard toward rare labels, the training set may become less similar
-to the real overall dataset.
-
-### In one sentence
-
-**This method intentionally favors sentences containing rare entity types.**
-
----
-
-## 4. Inverse-Frequency Weighted
-
-### Main idea
-
-Instead of simply saying “rare labels matter more”, this method gives each label
-a weight based on its frequency:
-
-- common label -> small weight
-- rare label -> large weight
-
-Usually the idea is:
-
-$$
-weight(label) \propto \frac{1}{frequency(label)}
-$$
-
-### How it works
-
-1. Count how often each label appears.
-2. Convert each label count into a weight.
-3. Score a sentence by adding up the weights of the labels inside it.
-4. Prefer higher-scoring sentences for training.
-
-### Why it helps
-
-This creates a smoother version of “rare-label boosted”.
-Instead of only saying “rare vs not rare”, it uses a continuous scale.
-
-### Beginner example
-
-Suppose:
-
-- `B-PER` appears 1000 times
-- `B-LOC` appears 300 times
-- `B-MISC` appears 20 times
-
-Then `B-MISC` gets much larger weight than `B-PER`.
-A sentence containing `B-MISC` becomes much more valuable for the training set.
-
-### In one sentence
-
-**This method scores sentences using mathematical weights that reward rare labels more strongly than common ones.**
-
----
-
-## 5. Min-Max Equalized
-
-### Main idea
-
-This method tries to reduce the biggest differences between:
-
-- label frequencies in the training split
-- label frequencies in the full dataset
-
-It aims for a more even balance across labels.
-
-### How it works
-
-1. Measure the full-dataset frequency of each label.
-2. Measure the current training frequency of each label.
-3. Look at the gaps.
-4. Prefer sentences that reduce the largest gaps.
-
-### Why it helps
-
-Sometimes one or two labels are much more underrepresented than the others.
-This method focuses on correcting those strong imbalances.
-
-### Beginner example
-
-Suppose training already matches the full dataset for:
-
-- person
-- location
-- organization
-
-but is still missing many `B-EVE` labels.
-Then this method prefers sentences containing `B-EVE` to reduce that worst gap.
-
-### In one sentence
-
-**This method tries to “flatten” the biggest imbalances between the training set and the full dataset.**
-
----
-
-## 6. Inverse-Frequency Token-Weighted
-
-### Main idea
-
-This is similar to Method 4, but it scores at the **token level** more directly.
-
-That means if a sentence contains many rare tokens, it receives more total score.
-
-### Difference from Method 4
-
-- Method 4 thinks more at the sentence label level
-- Method 6 gives stronger emphasis to the **number of rare tokens** inside the sentence
-
-### How it works
-
-1. Count label frequencies.
-2. Give inverse-frequency weight to each label.
-3. For each token in a sentence, add the weight of its label.
-4. Sentences with more rare-label tokens get higher score.
-
-### Beginner example
-
-Sentence A:
-- one rare token
-
-Sentence B:
-- four rare tokens
-
-Method 6 will often prefer Sentence B more strongly than Method 4, because it
-rewards the total rare-token mass inside the sentence.
-
-### In one sentence
-
-**This method is like inverse-frequency weighting, but it pays more attention to how many rare tokens a sentence contains.**
-
----
-
-## 7. Inverse-Frequency Eval-Guaranteed
-
-### Main idea
-
-This method builds on inverse-frequency weighting, but adds an extra rule:
-
-> every label should appear at least once in the evaluation split, if possible.
-
-### Why this matters
-
-If a label does not appear in evaluation, then we cannot really judge whether the
-model can recognise it.
-
-Example:
-
-- if `B-CER` appears only in training and never in eval,
-  then the evaluation score says nothing about that label
-
-### How it works
-
-1. Use inverse-frequency weighting to choose good training sentences.
-2. While splitting, make sure evaluation still keeps at least one example of
-   each label whenever possible.
-3. Avoid putting every rare-label sentence into training.
-
-### Beginner example
-
-Suppose there are only 2 sentences with a rare label.
-A normal rare-label method might place both in training.
-This method tries to keep at least one of them in evaluation.
-
-### Trade-off
-
-This helps evaluation fairness, but it can slightly reduce how many rare labels
-training gets.
-
-### In one sentence
-
-**This method balances rare-label training value with the need to still test those labels in evaluation.**
-
----
-
-## 8. Inverse-Frequency Log-Scaled
-
-### Main idea
-
-This method is like inverse-frequency weighting, but it uses a **logarithm** to
-soften extreme weights.
-
-Why is that useful?
-Because very rare labels can otherwise get huge weights and dominate the split.
-
-### Simple intuition
-
-Without log scaling:
-
-- very common label -> tiny score
-- ultra-rare label -> enormous score
-
-With log scaling:
-
-- very common label -> still small score
-- ultra-rare label -> important, but not absurdly dominant
-
-A typical idea is:
-
-$$
-score(label) = \log\left(1 + \frac{max\_count}{count(label)}\right)
-$$
-
-### How it works
-
-1. Count label frequencies.
-2. Compute inverse-frequency style rarity.
-3. Apply log scaling to reduce extreme values.
-4. Score sentences using those softer rarity scores.
-
-### Why it helps
-
-This often gives a better compromise:
-
-- rare labels are still rewarded
-- one extremely rare label does not control everything
-
-### Beginner example
-
-Suppose:
-
-- `B-PER` appears 1000 times
-- `B-MISC` appears 2 times
-
-Plain inverse weighting may push almost every choice toward `B-MISC`.
-Log scaling still values `B-MISC` highly, but keeps the method more stable.
-
-### In one sentence
-
-**This method rewards rarity, but in a more controlled and stable way.**
-
----
-
-## 9. Multilabel Stratified (Iterative Stratification)
+## 3. Multilabel Stratified (Iterative Stratification)
 
 ### Main idea
 
@@ -480,51 +217,85 @@ proportionally across both sides.
 
 ---
 
+## 4. Multilabel Stratified (Paper-Style Tie-Breaking)
+
+### Main idea
+
+This method follows the same overall philosophy as Method 3, but stays closer
+to the paper-style iterative stratification procedure.
+
+Like Method 3, it treats each sentence as a multi-label example and tries to
+keep label proportions similar across train and eval. The difference is in
+**how ties are resolved during assignment**.
+
+### How it works
+
+1. Represent each sentence by the set of non-`O` labels it contains.
+2. Compute how many examples of each label should ideally go to train and eval.
+3. Pick the rarest remaining label first.
+4. For each sentence containing that label, choose the target fold using a more
+   explicit tie-breaking order:
+   - first by the remaining need for that label,
+   - then by the remaining total capacity of the fold,
+   - then randomly if still tied.
+5. Update label targets and fold capacities after each assignment.
+6. Finish unresolved sentences and rebalance to exact split size.
+
+### What is different from Method 3
+
+Method 3 scores a sentence by the **total remaining need across all labels in
+that sentence** and sends it to the fold with the larger summed need.
+
+Method 4 is more literal about the iterative-stratification tie-breaking logic:
+
+- it first focuses on the currently selected rare label,
+- then uses fold capacity as an explicit second tie-break,
+- and only then falls back to randomness.
+
+So the difference is not the overall goal, but the **decision rule used when a
+sentence could reasonably go to either fold**.
+
+### Why this matters
+
+Method 4 is useful as a cleaner reference to the original iterative
+stratification idea. It helps test whether the more paper-like tie-breaking
+behavior produces better eval visibility or more stable per-label balance than
+Method 3.
+
+### In one sentence
+
+**Method 4 aims for the same proportional label balance as Method 3, but uses a more paper-faithful tie-breaking rule during assignment.**
+
+---
+
 ## Comparing the Methods in One Table
 
 | Method | Main Goal | Main Strength | Main Weakness |
 |--------|-----------|---------------|---------------|
 | Baseline (simple random) | Easy random split | Very simple | Ignores label balance |
 | Label-aware greedy | Match train to full dataset | Good overall balance | May not emphasize very rare labels enough |
-| Rare-label boosted | Prioritize rare labels | Better rare-label exposure | Can distort overall distribution |
-| Inverse-freq weighted | Reward rare labels mathematically | Flexible and principled | Can overweight extreme rarity |
-| Min-max equalized | Reduce biggest distribution gaps | Good at fixing strong imbalance | May be less intuitive |
-| Inv-freq token-weighted | Reward sentences with many rare tokens | Strong rare-token coverage | Can prefer dense rare-token sentences too much |
-| Inv-freq eval-guaranteed | Preserve rare labels in eval too | Better fairness in testing | Training may get fewer rare examples |
-| Inv-freq log-scaled | Reward rarity but gently | Stable and robust | Slightly less aggressive on ultra-rare labels |
 | Multilabel stratified | Preserve proportional label distribution in both folds | Principled and balanced for multi-label co-occurrence | More complex and less intuitive to implement |
+| Multilabel stratified (paper-style) | Preserve proportional label distribution with paper-style tie-breaking | Closer to the original iterative stratification procedure | Still heuristic; may behave differently on co-occurring labels |
 
 ---
 
 ## A Good Way to Teach This in a Beginner Class
 
-You can explain the 9 methods in three teaching groups.
+You can explain the 4 methods in two teaching groups.
 
-### Group A — The Simple Starting Point
+### Group A â€” The Simple Starting Point
 
 - **Method 1: Baseline random**
 
 This is what beginners already know: shuffle and split.
 
-### Group B — Methods That Try to Make Training Better
+### Group B â€” Methods That Try to Make Training Better
 
 - **Method 2: Label-aware greedy**
-- **Method 3: Rare-label boosted**
-- **Method 4: Inverse-freq weighted**
-- **Method 5: Min-max equalized**
-- **Method 6: Inv-freq token-weighted**
-- **Method 8: Inv-freq log-scaled**
-- **Method 9: Multilabel stratified**
+- **Method 3: Multilabel stratified**
+- **Method 4: Multilabel stratified (paper-style)**
 
-These methods all try to improve training quality by choosing better sentences.
-
-### Group C — Method That Also Protects Evaluation
-
-- **Method 7: Inv-freq eval-guaranteed**
-
-This one teaches an important scientific idea:
-
-> it is not enough to train well; we must also evaluate fairly.
+These methods try to improve training quality by choosing better sentences.
 
 ---
 
@@ -546,17 +317,12 @@ Students should remember these core messages:
 
 ## Short Teaching Summary
 
-Here is a short classroom summary of all 9 methods:
+Here is a short classroom summary of all 4 methods:
 
 1. **Baseline random**: just shuffle and split.
 2. **Label-aware greedy**: choose sentences that make training look like the full dataset.
-3. **Rare-label boosted**: push rare-label sentences into training.
-4. **Inverse-freq weighted**: give rare labels bigger mathematical weight.
-5. **Min-max equalized**: reduce the biggest label-balance gaps.
-6. **Inv-freq token-weighted**: reward sentences with many rare-label tokens.
-7. **Inv-freq eval-guaranteed**: keep rare labels visible in evaluation too.
-8. **Inv-freq log-scaled**: reward rare labels, but not too aggressively.
-9. **Multilabel stratified**: distribute each label proportionally across train and evaluation.
+3. **Multilabel stratified**: distribute each label proportionally across train and evaluation.
+4. **Multilabel stratified (paper-style)**: same goal as Method 3, but with more explicit paper-style tie-breaking during assignment.
 
 ---
 

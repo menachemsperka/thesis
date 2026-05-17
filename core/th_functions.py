@@ -108,8 +108,29 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     # Train the model
     trainer.train()
     
-    # Save the model
-    #trainer.save_model(model_save_path)
+    # Save the model if THESIS_SAVE_TRAINED_MODELS is set
+    save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
+    if save_models_flag:
+        # Build unique model save path based on experiment context
+        model_save_base = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "outputs", "trained_models"
+        )
+        os.makedirs(model_save_base, exist_ok=True)
+        
+        # Use environment variables to build a unique identifier
+        exp_id = os.environ.get("THESIS_CURRENT_EXP_ID", "unknown_exp")
+        model_id = os.environ.get("THESIS_MODEL_NAME", "unknown_model")
+        condition_key = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
+        seed = os.environ.get("THESIS_SPLIT_SEED", "42")
+        
+        # Sanitize model_id (remove path components)
+        model_short = model_id.replace("/", "_").replace("\\", "_").split("_")[-1]
+        save_name = f"{exp_id}_{model_short}_{condition_key}_seed{seed}"
+        model_save_path = os.path.join(model_save_base, save_name)
+        
+        trainer.save_model(model_save_path)
+        tokenizer.save_pretrained(model_save_path)
+        print(f"[Model Saved] {model_save_path}")
     
     # Evaluate the model
     evaluation_results = trainer.evaluate()
