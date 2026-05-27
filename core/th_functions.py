@@ -1,5 +1,7 @@
 import random
 import os
+from pathlib import Path
+from typing import Any, Tuple, List, Dict
 
 import warnings
 import pandas as pd
@@ -56,7 +58,7 @@ def balance_with_gai(train_data, data, g_type = 1):
         res.to_csv('temp_res.csv')
     return res
     
-def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer, label_list, metric_name="seqeval" ):
+def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer, label_list, metric_name="seqeval", output_path: str | Path | None = None, per_device_train_batch_size: int = 8, gradient_accumulation_steps: int = 2, weight_decay: float = 0.01, learning_rate: float = 2e-5, warmup_ratio: float = 0.1, logging_steps: int = 100):
     """
     Train and evaluate a model using the provided datasets and parameters.
 
@@ -82,11 +84,41 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     except ValueError:
         num_train_epochs = 3.0
 
-    training_args = TrainingArguments(
-        output_dir=os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "tmp_trainer"),
-        num_train_epochs=num_train_epochs,
-        save_strategy="no",
-    )
+    is_colab = os.environ.get("THESIS_RUN_ENV") == "colab"
+
+    if is_colab:
+        if output_path:
+            training_output_dir = os.path.join(output_path, "trainer_output")
+        else:
+            training_output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "tmp_trainer_run")
+            
+        training_args = TrainingArguments(
+            output_dir=training_output_dir,
+            num_train_epochs=num_train_epochs,
+            per_device_train_batch_size=per_device_train_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            weight_decay=weight_decay,
+            learning_rate=learning_rate,
+            warmup_ratio=warmup_ratio,
+            logging_steps=logging_steps,
+            evaluation_strategy="steps",
+            eval_steps=logging_steps,
+            save_strategy="steps",
+            save_steps=logging_steps,
+            save_total_limit=3,
+            load_best_model_at_end=True,
+            metric_for_best_model="overall_f1",
+            greater_is_better=True,
+            overwrite_output_dir=False,
+            report_to="none",
+        )
+    else:
+        training_output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "tmp_trainer")
+        training_args = TrainingArguments(
+            output_dir=training_output_dir,
+            num_train_epochs=num_train_epochs,
+            save_strategy="no",
+        )
     
     # Initialize the Trainer (Transformers compatibility: tokenizer -> processing_class)
     trainer_kwargs = {
@@ -111,26 +143,31 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     # Save the model if THESIS_SAVE_TRAINED_MODELS is set
     save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
     if save_models_flag:
-        # Build unique model save path based on experiment context
-        model_save_base = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "outputs", "trained_models"
-        )
-        os.makedirs(model_save_base, exist_ok=True)
-        
-        # Use environment variables to build a unique identifier
-        exp_id = os.environ.get("THESIS_CURRENT_EXP_ID", "unknown_exp")
-        model_id = os.environ.get("THESIS_MODEL_NAME", "unknown_model")
-        condition_key = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
-        seed = os.environ.get("THESIS_SPLIT_SEED", "42")
-        
-        # Sanitize model_id (remove path components)
-        model_short = model_id.replace("/", "_").replace("\\", "_").split("_")[-1]
-        save_name = f"{exp_id}_{model_short}_{condition_key}_seed{seed}"
-        model_save_path = os.path.join(model_save_base, save_name)
-        
-        trainer.save_model(model_save_path)
-        tokenizer.save_pretrained(model_save_path)
-        print(f"[Model Saved] {model_save_path}")
+        if is_colab:
+            final_model_save_path = os.path.join(training_output_dir, "final_model")
+            trainer.save_model(final_model_save_path)
+            print(f"Final trained model saved to: {final_model_save_path}")
+        else:
+            # Build unique model save path based on experiment context
+            model_save_base = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), "outputs", "trained_models"
+            )
+            os.makedirs(model_save_base, exist_ok=True)
+            
+            # Use environment variables to build a unique identifier
+            exp_id = os.environ.get("THESIS_CURRENT_EXP_ID", "unknown_exp")
+            model_id = os.environ.get("THESIS_MODEL_NAME", "unknown_model")
+            condition_key = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
+            seed = os.environ.get("THESIS_SPLIT_SEED", "42")
+            
+            # Sanitize model_id (remove path components)
+            model_short = model_id.replace("/", "_").replace("\\", "_").split("_")[-1]
+            save_name = f"{exp_id}_{model_short}_{condition_key}_seed{seed}"
+            model_save_path = os.path.join(model_save_base, save_name)
+            
+            trainer.save_model(model_save_path)
+            tokenizer.save_pretrained(model_save_path)
+            print(f"[Model Saved] {model_save_path}")
     
     # Evaluate the model
     evaluation_results = trainer.evaluate()

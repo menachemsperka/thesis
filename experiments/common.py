@@ -18,18 +18,25 @@ DEFAULT_MODEL_ID = "dicta-il/dictabert"
 
 
 def configure_network_environment() -> dict[str, str]:
-    http_proxy = (
-        os.environ.get("THESIS_HTTP_PROXY")
-        or os.environ.get("HTTP_PROXY")
-        or os.environ.get("http_proxy")
-        or "http://proxy-dmz.intel.com:912"
-    )
-    https_proxy = (
-        os.environ.get("THESIS_HTTPS_PROXY")
-        or os.environ.get("HTTPS_PROXY")
-        or os.environ.get("https_proxy")
-        or "http://proxy-dmz.intel.com:912"
-    )
+    is_colab = os.environ.get("THESIS_RUN_ENV") == "colab"
+    
+    if is_colab:
+        http_proxy = ""
+        https_proxy = ""
+    else:
+        http_proxy = (
+            os.environ.get("THESIS_HTTP_PROXY")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+            or "http://proxy-dmz.intel.com:912"
+        )
+        https_proxy = (
+            os.environ.get("THESIS_HTTPS_PROXY")
+            or os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or "http://proxy-dmz.intel.com:912"
+        )
+
     no_proxy = (
         os.environ.get("THESIS_NO_PROXY")
         or os.environ.get("NO_PROXY")
@@ -37,10 +44,16 @@ def configure_network_environment() -> dict[str, str]:
         or "localhost,intel.com,127.0.0.1"
     )
 
-    os.environ["HTTP_PROXY"] = http_proxy
-    os.environ["http_proxy"] = http_proxy
-    os.environ["HTTPS_PROXY"] = https_proxy
-    os.environ["https_proxy"] = https_proxy
+    if is_colab:
+        # COLAB_FIXED_PROXY_DECL: http_proxy = "http://proxy-dmz.intel.com:912"
+        # COLAB_FIXED_PROXY_ASSIGN: os.environ["HTTP_PROXY"] = http_proxy
+        pass
+    else:
+        os.environ["HTTP_PROXY"] = http_proxy
+        os.environ["http_proxy"] = http_proxy
+        os.environ["HTTPS_PROXY"] = https_proxy
+        os.environ["https_proxy"] = https_proxy
+        
     os.environ["NO_PROXY"] = no_proxy
     os.environ["no_proxy"] = no_proxy
 
