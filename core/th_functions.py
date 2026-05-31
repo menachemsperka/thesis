@@ -88,17 +88,24 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     if is_colab:
         # Colab-specific training arguments
         out_dir = output_path if output_path else os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_output", "final_model")
-        training_args = TrainingArguments(
-            output_dir=out_dir,
-            num_train_epochs=num_train_epochs,
-            save_strategy="steps",
-            save_steps=100,
-            evaluation_strategy="steps",
-            eval_steps=100,
-            save_total_limit=3,
-            load_best_model_at_end=True,
-            metric_for_best_model="overall_f1",
-        )
+        colab_kwargs = {
+            "output_dir": out_dir,
+            "num_train_epochs": num_train_epochs,
+            "save_strategy": "steps",
+            "save_steps": 100,
+            "eval_steps": 100,
+            "save_total_limit": 3,
+            "load_best_model_at_end": True,
+            "metric_for_best_model": "overall_f1",
+        }
+        # Handle recent Transformers versions where evaluation_strategy was renamed to eval_strategy
+        sig = inspect.signature(TrainingArguments.__init__)
+        if "eval_strategy" in sig.parameters:
+            colab_kwargs["eval_strategy"] = "steps"
+        else:
+            colab_kwargs["evaluation_strategy"] = "steps"
+            
+        training_args = TrainingArguments(**colab_kwargs)
     else:
         # Default local training arguments
         out_dir = output_path if output_path else os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "tmp_trainer")
