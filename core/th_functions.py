@@ -87,7 +87,16 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     
     if is_colab:
         # Colab-specific training arguments
-        out_dir = output_path if output_path else os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_output", "final_model")
+        # Generate a unique directory name for checkpoints to prevent crossover matching between different experiments
+        exp_id_env = os.environ.get("THESIS_CURRENT_EXP_ID", "unknown_exp")
+        model_id_env = os.environ.get("THESIS_MODEL_NAME", "unknown_model")
+        cond_key_env = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
+        seed_env = os.environ.get("THESIS_SPLIT_SEED", "42")
+        model_short_env = model_id_env.replace("/", "_").replace("\\", "_").split("_")[-1]
+        unique_run_name = f"{exp_id_env}_{model_short_env}_{cond_key_env}_seed{seed_env}"
+        
+        default_out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_checkpoints", unique_run_name)
+        out_dir = output_path if output_path else default_out_dir
         colab_kwargs = {
             "output_dir": out_dir,
             "num_train_epochs": num_train_epochs,
@@ -97,6 +106,7 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
             "save_total_limit": 3,
             "load_best_model_at_end": True,
             "metric_for_best_model": "overall_f1",
+            "fp16": True,  # Automatically utilize GPU mixed precision if available
         }
         # Handle recent Transformers versions where evaluation_strategy was renamed to eval_strategy
         sig = inspect.signature(TrainingArguments.__init__)
@@ -133,7 +143,26 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     trainer = Trainer(**trainer_kwargs)
     
     # Train the model
-    trainer.train()
+    if is_colab:
+        import glob
+        # Try to resume from latest checkpoint safely if one exists in the specific run directory
+        last_checkpoint = None
+        if os.path.isdir(out_dir):
+            checkpoints = [
+                d for d in glob.glob(os.path.join(out_dir, "checkpoint-*"))
+                if os.path.isdir(d)
+            ]
+            if len(checkpoints) > 0:
+                # Get the checkpoint with the highest step number
+                last_checkpoint = max(checkpoints, key=lambda x: int(x.split("-")[-1]))
+        
+        if last_checkpoint:
+            print(f"[Colab Mode] Resuming Trainer from checkpoint: {last_checkpoint}")
+            trainer.train(resume_from_checkpoint=last_checkpoint)
+        else:
+            trainer.train()
+    else:
+        trainer.train()
     
     # Save the model if THESIS_SAVE_TRAINED_MODELS is set
     save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
