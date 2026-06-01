@@ -145,6 +145,7 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     # Train the model
     if is_colab:
         import glob
+        import shutil
         # Try to resume from latest checkpoint safely if one exists in the specific run directory
         last_checkpoint = None
         if os.path.isdir(out_dir):
@@ -152,9 +153,28 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
                 d for d in glob.glob(os.path.join(out_dir, "checkpoint-*"))
                 if os.path.isdir(d)
             ]
-            if len(checkpoints) > 0:
+            valid_checkpoints = []
+            for d in checkpoints:
+                # A checkpoint is valid only if it contains actual weight files
+                has_weights = (
+                    os.path.exists(os.path.join(d, "model.safetensors")) or
+                    os.path.exists(os.path.join(d, "pytorch_model.bin")) or
+                    os.path.exists(os.path.join(d, "model.pt")) or
+                    os.path.exists(os.path.join(d, "model.safetensors.index.json")) or
+                    os.path.exists(os.path.join(d, "pytorch_model.bin.index.json"))
+                )
+                if has_weights:
+                    valid_checkpoints.append(d)
+                else:
+                    print(f"[Colab Mode Warning] Found invalid/incomplete checkpoint at {d} (missing weights). Cleaning it up...")
+                    try:
+                        shutil.rmtree(d)
+                    except Exception as e:
+                        print(f"[Colab Mode Warning] Failed to remove invalid checkpoint folder {d}: {e}")
+            
+            if len(valid_checkpoints) > 0:
                 # Get the checkpoint with the highest step number
-                last_checkpoint = max(checkpoints, key=lambda x: int(x.split("-")[-1]))
+                last_checkpoint = max(valid_checkpoints, key=lambda x: int(x.split("-")[-1]))
         
         if last_checkpoint:
             print(f"[Colab Mode] Resuming Trainer from checkpoint: {last_checkpoint}")
