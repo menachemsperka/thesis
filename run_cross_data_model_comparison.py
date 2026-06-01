@@ -1997,6 +1997,9 @@ def run_comparison(
                     reused_base_artifacts = False
                     try:
                         os.environ["THESIS_SPLIT_SEED"] = str(cond.get("seed", DEFAULT_BASE_SEED))
+                        # Explicitly bind condition key and exp id for HF Trainer isolated checkpointing
+                        os.environ["THESIS_CURRENT_CONDITION_KEY"] = str(cond.get("key", "default"))
+                        os.environ["THESIS_CURRENT_EXP_ID"] = f"exp{exp_id}"
 
                         # Exp05 + fusion ready variants are always executed on top of
                         # cached (or newly trained) Exp01/Exp04 outputs.
@@ -2056,6 +2059,8 @@ def run_comparison(
                         }
                     finally:
                         os.environ.pop("THESIS_SPLIT_SEED", None)
+                        os.environ.pop("THESIS_CURRENT_CONDITION_KEY", None)
+                        os.environ.pop("THESIS_CURRENT_EXP_ID", None)
 
                     elapsed = time.time() - t0
                     _log(f"  F1={_fmt(metrics.get('f1'))} ({elapsed:.1f}s)")
