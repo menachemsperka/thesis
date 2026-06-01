@@ -1046,22 +1046,53 @@ def run() -> dict:
             split_fn = SPLIT_FNS[variant_key]
             train, eval_ = split_fn(sentences, split_ratio, current_seed)
 
-            with suppress_output_if_needed():
-                # Set environment variables so HuggingFace Trainer uniquely isolates colab checkpoints
-                os.environ["THESIS_CURRENT_EXP_ID"] = "exp07"
-                # Strip spaces for folder-safe naming
-                safe_variant_key = variant_key.replace(" ", "_")
-                os.environ["THESIS_CURRENT_CONDITION_KEY"] = safe_variant_key
-                os.environ["THESIS_SPLIT_SEED"] = str(current_seed)
-                os.environ["THESIS_MODEL_NAME"] = model_name
+            # Check if cached metrics and a fully trained model are already available to skip loading and evaluation entirely
+            cache_dir = exp_dir / "metrics_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe_variant_key = variant_key.replace(" ", "_")
+            metrics_cache_file = cache_dir / f"metrics_seed{current_seed}_{safe_variant_key}.json"
+            
+            # Reconstruct model save path to verify model existence
+            model_short_repr = model_name.replace("/", "_").replace("\\", "_").split("_")[-1]
+            check_model_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), 
+                "outputs", 
+                "trained_models", 
+                f"exp07_{model_short_repr}_{safe_variant_key}_seed{current_seed}"
+            )
+            has_trained_model = os.path.exists(os.path.join(check_model_path, "model.safetensors"))
 
-                metrics = _train_split(
-                    data=data,
-                    train_sentences=train,
-                    eval_sentences=eval_,
-                    model_name=model_name,
-                    is_local_model=is_local_model,
-                )
+            metrics = None
+            if metrics_cache_file.exists() and has_trained_model:
+                try:
+                    import json as _json
+                    metrics = _json.loads(metrics_cache_file.read_text(encoding="utf-8"))
+                    print(f"    [Cache Skip] Loaded cached metrics for {variant_key} from cache file.")
+                except Exception as e:
+                    print(f"    [Cache Skip Warning] Failed to load cached metrics: {e}")
+                    metrics = None
+
+            if metrics is None:
+                with suppress_output_if_needed():
+                    # Set environment variables so HuggingFace Trainer uniquely isolates colab checkpoints
+                    os.environ["THESIS_CURRENT_EXP_ID"] = "exp07"
+                    os.environ["THESIS_CURRENT_CONDITION_KEY"] = safe_variant_key
+                    os.environ["THESIS_SPLIT_SEED"] = str(current_seed)
+                    os.environ["THESIS_MODEL_NAME"] = model_name
+
+                    metrics = _train_split(
+                        data=data,
+                        train_sentences=train,
+                        eval_sentences=eval_,
+                        model_name=model_name,
+                        is_local_model=is_local_model,
+                    )
+                # Save to cache
+                try:
+                    import json as _json
+                    metrics_cache_file.write_text(_json.dumps(metrics, indent=2), encoding="utf-8")
+                except Exception as e:
+                    print(f"    [Cache Save Error] Failed to write cache file: {e}")
 
             summary, label_df, rare_df_v, train_only, eval_only = _build_split_artifacts(
                 variant=variant_key,
