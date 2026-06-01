@@ -1248,6 +1248,34 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
         first_seed_eval_file = ""
         for seed_idx, seed in enumerate(seed_list, start=1):
             aug_job_idx += 1
+            aug_train_file = f"{variant_name}_seed{seed}_augmented_train.json"
+            aug_eval_file = f"{variant_name}_seed{seed}_eval.json"
+            aug_train_path = EXP07_AUG_SPLITS_DIR / aug_train_file
+            aug_eval_path = EXP07_AUG_SPLITS_DIR / aug_eval_file
+
+            if aug_train_path.exists() and aug_eval_path.exists():
+                _log(
+                    f"  Augmentation skipped {aug_job_idx}/{total_aug_jobs} (already exists) | "
+                    f"variant {variant_idx}/{len(all_variants)} | seed {seed_idx}/{len(seed_list)} (s{seed})"
+                )
+                try:
+                    augmented_train = load_split(aug_train_path)
+                    generated_sents_len = len(augmented_train) - len(train_sentences)
+                except Exception:
+                    generated_sents_len = 0
+                seed_files[str(seed)] = {
+                    "seed": int(seed),
+                    "train_file": aug_train_file,
+                    "eval_file": aug_eval_file,
+                    "original_train_sentences": len(train_sentences),
+                    "generated_sentences": generated_sents_len,
+                    "augmented_train_sentences": len(train_sentences) + generated_sents_len,
+                }
+                if not first_seed_train_file:
+                    first_seed_train_file = aug_train_file
+                    first_seed_eval_file = aug_eval_file
+                continue
+
             _log(
                 f"  Augmentation progress {aug_job_idx}/{total_aug_jobs} | "
                 f"variant {variant_idx}/{len(all_variants)} | seed {seed_idx}/{len(seed_list)} (s{seed})"
@@ -1262,11 +1290,9 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
                 )
             augmented_train = train_sentences + generated_sents
 
-            aug_train_file = f"{variant_name}_seed{seed}_augmented_train.json"
-            aug_eval_file = f"{variant_name}_seed{seed}_eval.json"
-            save_split(augmented_train, EXP07_AUG_SPLITS_DIR / aug_train_file)
+            save_split(augmented_train, aug_train_path)
             # Eval set is deterministic per seed for downstream wiring; save per-seed copy.
-            save_split(eval_sentences, EXP07_AUG_SPLITS_DIR / aug_eval_file)
+            save_split(eval_sentences, aug_eval_path)
 
             seed_files[str(seed)] = {
                 "seed": int(seed),
