@@ -563,23 +563,52 @@ def _train_split(
     model_name: str,
     is_local_model: bool,
 ) -> dict:
-    model, tokenizer, data_collator, ds_train, ds_eval, _, label_list = tf.setup_token_classification(
-        data=data,
-        train_data=train_sentences,
-        test_data=eval_sentences,
-        eval_data=eval_sentences,
-        model_name=model_name,
-        local_files_only=is_local_model,
+    # Reconstruct the expected output model directory to check for cached trained model
+    exp_id = os.environ.get("THESIS_CURRENT_EXP_ID", "exp07")
+    model_id = os.environ.get("THESIS_MODEL_NAME", model_name)
+    condition_key = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
+    seed = os.environ.get("THESIS_SPLIT_SEED", "42")
+    model_short = model_id.replace("/", "_").replace("\\", "_").split("_")[-1]
+    save_name = f"{exp_id}_{model_short}_{condition_key}_seed{seed}"
+    
+    model_save_base = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "outputs", "trained_models"
     )
-    _, eval_results = tf.train_and_evaluate_model(
-        model,
-        ds_train,
-        ds_eval,
-        data_collator,
-        tokenizer,
-        label_list,
-        metric_name="seqeval",
-    )
+    model_save_path = os.path.join(model_save_base, save_name)
+    
+    old_epochs = os.environ.get("THESIS_NUM_EPOCHS")
+    
+    if os.path.exists(os.path.join(model_save_path, "model.safetensors")):
+        print(f"[Cache Skip] Model already fully trained at {model_save_path}. Evaluating saved weights.")
+        model_name = model_save_path
+        is_local_model = True
+        os.environ["THESIS_NUM_EPOCHS"] = "0.0"
+
+    try:
+        model, tokenizer, data_collator, ds_train, ds_eval, _, label_list = tf.setup_token_classification(
+            data=data,
+            train_data=train_sentences,
+            test_data=eval_sentences,
+            eval_data=eval_sentences,
+            model_name=model_name,
+            local_files_only=is_local_model,
+        )
+        _, eval_results = tf.train_and_evaluate_model(
+            model,
+            ds_train,
+            ds_eval,
+            data_collator,
+            tokenizer,
+            label_list,
+            metric_name="seqeval",
+        )
+    finally:
+        # Restore old epochs env variable
+        if old_epochs is not None:
+            os.environ["THESIS_NUM_EPOCHS"] = old_epochs
+        else:
+            os.environ.pop("THESIS_NUM_EPOCHS", None)
+
     return {
         "f1": eval_results.get("eval_overall_f1"),
         "precision": eval_results.get("eval_overall_precision"),
