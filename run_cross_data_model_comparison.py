@@ -984,6 +984,33 @@ def _exp07_artifacts_ready() -> tuple[bool, str]:
     variants = meta.get("variants")
     if not isinstance(variants, list) or not variants:
         return False, "No variants in split_meta.json"
+
+    # In Colab mode we require exp07 metadata to explicitly confirm full seed coverage
+    # before allowing downstream exp07+augmentation generation.
+    is_colab = os.environ.get("THESIS_RUN_ENV") == "colab"
+    if is_colab:
+        seeds_raw = (
+            os.environ.get("THESIS_EXP07_NUM_SEEDS")
+            or os.environ.get("THESIS_DIRECT_SPLIT_RUNS")
+            or "20"
+        ).strip()
+        try:
+            expected_num_seeds = max(2, int(seeds_raw))
+        except ValueError:
+            expected_num_seeds = 20
+
+        actual_num_seeds = meta.get("num_seeds")
+        if not isinstance(actual_num_seeds, int):
+            return False, (
+                "Exp07 split metadata missing 'num_seeds' in Colab mode; "
+                "rerun exp07 to generate complete multi-seed artifacts"
+            )
+        if actual_num_seeds < expected_num_seeds:
+            return False, (
+                f"Exp07 splits incomplete for Colab mode: expected {expected_num_seeds} seeds, "
+                f"found {actual_num_seeds}"
+            )
+
     for vm in variants:
         tf = vm.get("train_file")
         ef = vm.get("eval_file")
@@ -1008,6 +1035,17 @@ def _prepare_exp07_splits(source: str) -> dict[str, Any]:
         _log("Exp07 split artifacts valid; reusing.")
         return {"source": "saved", "reran_exp07": False}
     _log("Running experiment 07 to generate split artifacts...")
+
+    # Keep regular mode untouched; in Colab default to 20 seeds unless explicitly set.
+    if os.environ.get("THESIS_RUN_ENV") == "colab":
+        desired_raw = (
+            os.environ.get("THESIS_EXP07_NUM_SEEDS")
+            or os.environ.get("THESIS_DIRECT_SPLIT_RUNS")
+            or "20"
+        ).strip()
+        os.environ["THESIS_EXP07_NUM_SEEDS"] = desired_raw
+        _log(f"Colab exp07 seed target: {desired_raw}")
+
     t0 = time.time()
     mod07 = _import_experiment("07")
     mod07.run()
@@ -1808,6 +1846,9 @@ def run_comparison(
         _log(f"Rows used: {len(rows)}")
     else:
         # ── Prepare data conditions ───────────────────────────────────────
+        print(f"\n{'-'*60}")
+        print(f"  [PREP] Exp07 / Exp08 / Exp07+Aug artifacts")
+        print(f"{'-'*60}")
         _log(f"Preparing exp07 splits (source={exp07_source})...")
         prep07 = _prepare_exp07_splits(exp07_source)
 
@@ -1827,6 +1868,13 @@ def run_comparison(
         else:
             _log("Skipping exp07+augmentation combined splits (--skip-augmentation).")
             prep07_aug = {"source": "skipped", "generated": False}
+
+        _log(
+            "Preparation summary | "
+            f"exp07={prep07.get('source', 'unknown')} | "
+            f"exp08={prep08.get('source', 'unknown')} | "
+            f"exp07+aug={prep07_aug.get('source', 'unknown')}"
+        )
 
         resolved_aug_model = str(prep07_aug.get("augmentation_model") or "").strip()
         if resolved_aug_model:

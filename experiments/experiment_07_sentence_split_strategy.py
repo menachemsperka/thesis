@@ -1108,6 +1108,8 @@ def run() -> dict:
         "best_variant_label": THESIS_LABELS.get(best_after_key, best_after_key),
         "best_variant_f1_mean": best_f1,
         "seed": split_seed,
+        "num_seeds": num_seeds,
+        "seed_list": [split_seed + i for i in range(num_seeds)],
         "split_ratio": split_ratio,
         "variants": all_variant_meta,
     }
