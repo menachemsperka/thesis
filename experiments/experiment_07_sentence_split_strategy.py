@@ -1018,6 +1018,14 @@ def run() -> dict:
             train, eval_ = split_fn(sentences, split_ratio, current_seed)
 
             with suppress_output_if_needed():
+                # Set environment variables so HuggingFace Trainer uniquely isolates colab checkpoints
+                os.environ["THESIS_CURRENT_EXP_ID"] = "exp07"
+                # Strip spaces for folder-safe naming
+                safe_variant_key = variant_key.replace(" ", "_")
+                os.environ["THESIS_CURRENT_CONDITION_KEY"] = safe_variant_key
+                os.environ["THESIS_SPLIT_SEED"] = str(current_seed)
+                os.environ["THESIS_MODEL_NAME"] = model_name
+
                 metrics = _train_split(
                     data=data,
                     train_sentences=train,
