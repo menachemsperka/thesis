@@ -103,13 +103,18 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
             "save_strategy": "steps",
             "save_steps": 100,
             "eval_steps": 100,
-            "save_total_limit": 3,
+            "save_total_limit": 2,  # Reduced from 3 to limit disk space
             "load_best_model_at_end": True,
             "metric_for_best_model": "overall_f1",
             "fp16": True,  # Automatically utilize GPU mixed precision if available
         }
-        # Handle recent Transformers versions where evaluation_strategy was renamed to eval_strategy
+        
+        # Add save_only_model to prevent large optimizer.pt files from filling up Google Drive
         sig = inspect.signature(TrainingArguments.__init__)
+        if "save_only_model" in sig.parameters:
+            colab_kwargs["save_only_model"] = True
+            
+        # Handle recent Transformers versions where evaluation_strategy was renamed to eval_strategy
         if "eval_strategy" in sig.parameters:
             colab_kwargs["eval_strategy"] = "steps"
         else:
