@@ -85,7 +85,11 @@ models/
 
 # Project data/model output directories
 models/
-outputs/
+outputs/*
+
+# Keep final thesis result artifacts tracked in the repository
+!outputs/00 final_results/
+!outputs/00 final_results/**
 
 # Keep source datasets tracked in the repository
 !data/

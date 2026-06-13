@@ -164,6 +164,22 @@ Quick example for one disagreement token:
 
 So the sweep is effectively selecting the disagreement policy that maximizes full-sequence entity F1, rather than fixing a hand-tuned or arbitrary 50/50 trust split.
 
+In contrast, **SVM Router Fusion** takes a machine-learning approach to learn *context-dependent* routing rules for disagreements. Instead of finding one global weight, it trains a classifier specifically to predict which model is right when they disagree.
+
+The SVM Router works in the following steps:
+
+1. **Keep Agreements:** If both models predict the same label, keep that agreed label.
+2. **Filter Training Disagreements:** On the training set, isolate only the tokens where the two models **disagree**.
+3. **Assign Target Targets:** For each disagreement token, check which model matched the ground truth:
+   - If `regular` was correct, the target is `regular`.
+   - If `cascade` was correct, the target is `cascade`.
+   - If both models were wrong, the token is discarded from training (ambiguous).
+4. **Feature Extraction:** For the remaining usable disagreement tokens, build a feature vector $\mathbf{x}$ using:
+   - **Numeric features** (Standard Scaled): Confidences ($p_{reg}, p_{cas}$), margins, probability difference, absolute probability difference, and max probability.
+   - **Categorical features** (One-Hot Encoded): The predicted BIO tag and Entity Type from both the regular and cascade models.
+5. **Train Linear SVM:** Train a `LinearSVC` classifier on these features with `class_weight="balanced"` to predict the target source.
+6. **Inference Arbitration:** During evaluation, whenever a disagreement occurs, the same feature vector $\mathbf{x}$ is extracted and passed to the trained SVM. If the SVM outputs `regular`, the regular prediction is chosen; if `cascade`, the cascaded prediction is chosen.
+
 Why did the other fusion variants perform worse on average?
 
 - **Raw fusion (`06`)** is simple and sometimes helpful, but it assumes raw confidence scales are already comparable between models; this is often false, so disagreement decisions are noisy.
