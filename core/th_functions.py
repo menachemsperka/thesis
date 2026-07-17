@@ -194,6 +194,13 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     
     # Save the model if THESIS_SAVE_TRAINED_MODELS is set
     save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
+    # Restrict saving to a single designated seed (e.g. the first) when requested,
+    # so only one representative model per model/condition is kept for HF upload.
+    save_seed = (os.environ.get("THESIS_MODEL_SAVE_SEED") or "").strip()
+    current_seed = (os.environ.get("THESIS_SPLIT_SEED") or "42").strip()
+    if save_models_flag and save_seed and save_seed != current_seed:
+        save_models_flag = False
+        print(f"[Model Save Skipped] seed {current_seed} != save seed {save_seed}")
     if save_models_flag:
         # Build unique model save path based on experiment context
         model_save_base = os.path.join(

@@ -17,6 +17,11 @@ from common import (
     write_result_json,
     write_split_runs_excel,
 )
+from error_analysis import (
+    annotate_error_types,
+    build_error_analysis_sheets,
+    model_display_name,
+)
 
 
 CORE_DIR = Path(__file__).resolve().parents[1] / "core"
@@ -211,10 +216,15 @@ def run() -> dict:
         detailed_df = _build_detailed_results(model, val_data, tokenizer, entity_types=["ENT"])
 
     f1 = metrics.get("f1")
+    model_display = model_display_name(model_name)
+    split_condition = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
     metrics_df = pd.DataFrame(
         [
             {
                 "dataset_name": "ner_dataset.csv",
+                "model": model_display,
+                "split_condition": split_condition,
+                "seed": split_seed,
                 "f1": float(f1) if f1 is not None else None,
                 "precision": float(metrics.get("precision")) if metrics.get("precision") is not None else None,
                 "recall": float(metrics.get("recall")) if metrics.get("recall") is not None else None,
@@ -225,6 +235,33 @@ def run() -> dict:
     )
     token_df = _build_token_level_df(detailed_df)
     extra_sheets = _build_extra_sheets(token_df)
+
+    # Rich error-analysis sheets (token level; AUC-2T has no per-token probability).
+    if token_df is not None and not token_df.empty:
+        token_df = annotate_error_types(token_df, "true_label", "predicted_label")
+        ea_sheets = build_error_analysis_sheets(
+            token_df,
+            experiment_name="AUC-2T NER",
+            model=model_display,
+            split_condition=split_condition,
+            seed=str(split_seed),
+            true_col="true_label",
+            pred_col="predicted_label",
+            sentence_col="sentence_id",
+            token_idx_col="token_id",
+            token_col="token",
+            extra_sheet_docs=[
+                ("token_level", "Per-token true vs predicted label with is_correct and error_type."),
+                ("classification_report", "Token-level (sklearn) per-label precision/recall/F1."),
+                ("token_errors", "All misclassified tokens (no context window)."),
+            ],
+        )
+        merged_sheets = dict(ea_sheets)
+        for name, sheet in extra_sheets.items():
+            merged_sheets.setdefault(name, sheet)
+        # Replace the plain token_level with the error_type-annotated one.
+        merged_sheets["token_level"] = token_df
+        extra_sheets = merged_sheets
     metrics_file = write_result_excel(
         "exp03",
         "auc_2t_results",

@@ -12,17 +12,24 @@ train/test separation use the full training variant (experiment_06_fusion_svm.py
 """
 from __future__ import annotations
 
+import json
+import os
+import re
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 from fusion_ready_sources import run_ready_fusion
 
 try:
+    import joblib
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler, OneHotEncoder
     from sklearn.compose import ColumnTransformer
     from sklearn.svm import LinearSVC
 except ImportError:
+    joblib = None  # type: ignore[misc,assignment]
     Pipeline = None  # type: ignore[misc,assignment]
 
 
@@ -42,6 +49,70 @@ _CATEGORICAL_FEATURES = [
     "cascade_bio",
     "cascade_etype",
 ]
+
+
+def _sanitize_for_path(value, fallback="unknown") -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        text = fallback
+    text = text.rstrip("/").split("/")[-1] or fallback
+    text = re.sub(r"[^A-Za-z0-9._=-]+", "_", text).strip("_")
+    return (text or fallback)[:160]
+
+
+def _save_router_artifact(router, info: dict) -> str:
+    """Persist the ready SVM router as an uploadable artifact folder."""
+    save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
+    if not save_models_flag:
+        return ""
+    # Restrict saving to a single designated seed (e.g. the first) when requested.
+    save_seed = (os.environ.get("THESIS_MODEL_SAVE_SEED") or "").strip()
+    current_seed = (os.environ.get("THESIS_SPLIT_SEED") or "42").strip()
+    if save_seed and save_seed != current_seed:
+        return ""
+
+    project_root = Path(__file__).resolve().parents[1]
+    save_base = project_root / "outputs" / "trained_models"
+    save_base.mkdir(parents=True, exist_ok=True)
+
+    model_short = _sanitize_for_path(os.environ.get("THESIS_MODEL_NAME", "model"), "model")
+    condition_key = _sanitize_for_path(os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default"), "default")
+    seed = _sanitize_for_path(os.environ.get("THESIS_SPLIT_SEED", "42"), "42")
+    save_path = save_base / f"exp06_svm_router_{model_short}_{condition_key}_seed{seed}"
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    metadata = {
+        "artifact_type": "SVM disagreement router for Exp06 ready fusion",
+        "experiment_id": "exp06_svm_ready",
+        "model_name_env": os.environ.get("THESIS_MODEL_NAME", ""),
+        "condition_key": os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default"),
+        "seed": os.environ.get("THESIS_SPLIT_SEED", "42"),
+        "numeric_features": _NUMERIC_FEATURES,
+        "categorical_features": _CATEGORICAL_FEATURES,
+        "router_info": info,
+        "router_file": "router.joblib" if router is not None and joblib is not None else "",
+        "notes": (
+            "This is not a standalone NER transformer. It is a scikit-learn router "
+            "that chooses between Exp01 regular NER and Exp04 cascaded predictions "
+            "on disagreement tokens."
+        ),
+    }
+
+    if router is not None and joblib is not None:
+        joblib.dump(router, save_path / "router.joblib")
+
+    (save_path / "router_metadata.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (save_path / "README.md").write_text(
+        "# Exp06 SVM Router Fusion Artifact\n\n"
+        "This folder contains the scikit-learn LinearSVC disagreement router used by `exp06_svm_ready`.\n\n"
+        "It is not a standalone transformer NER model. It routes disagreements between matched Exp01 and Exp04 outputs.\n",
+        encoding="utf-8",
+    )
+    print(f"[Router Saved] {save_path}")
+    return str(save_path)
 
 
 def _train_router(merged: pd.DataFrame):
@@ -97,6 +168,7 @@ def _train_router(merged: pd.DataFrame):
 def _svm_fusion(merged):
     """Train SVM router, then apply it on all disagreements."""
     router, info = _train_router(merged)
+    router_artifact_path = _save_router_artifact(router, info)
 
     reg_label = merged["regular_pred_label"].values
     cas_label = merged["cascade_pred_label"].values
@@ -141,6 +213,7 @@ def _svm_fusion(merged):
     merged["selected_source"] = source
     merged["selected_confidence"] = confidence
     merged["svm_router_info"] = str(info)
+    merged["svm_router_artifact"] = router_artifact_path
     return merged
 
 

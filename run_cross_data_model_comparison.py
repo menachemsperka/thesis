@@ -1713,8 +1713,14 @@ def run_comparison(
     if base_mode not in {"auto", "reuse", "retrain"}:
         raise ValueError("base_mode must be one of: auto, reuse, retrain")
 
+    if num_seeds < 1:
+        raise ValueError("num_seeds must be >= 1")
     if num_seeds < 2:
-        raise ValueError("num_seeds must be >= 2")
+        print(
+            "[WARN] num_seeds < 2: paired significance testing and cross-seed "
+            "aggregation are disabled. Use >= 2 for publication statistics. "
+            "Single-seed runs are fine for producing/uploading a model."
+        )
 
     # Seed count controls paired repeated runs for significance testing.
     os.environ["THESIS_EXP07_NUM_SEEDS"] = str(num_seeds)
@@ -2676,6 +2682,15 @@ if __name__ == "__main__":
         help="Deprecated toggle; trained models are always saved to outputs/trained_models/.",
     )
     parser.add_argument(
+        "--save-all-seed-models",
+        action="store_true",
+        help=(
+            "Save trained models for every seed. Default saves only the first seed "
+            "(seed %d) — one representative model per model/condition for HF upload."
+            % DEFAULT_BASE_SEED
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume from saved progress checkpoint and skip completed runs.",
@@ -2736,6 +2751,12 @@ if __name__ == "__main__":
 
     # Always enable model saving for artifact reuse in future fusion runs.
     os.environ["THESIS_SAVE_TRAINED_MODELS"] = "1"
+    # By default keep only the first seed's models (one per model/condition) for HF
+    # upload; pass --save-all-seed-models to persist every seed instead.
+    if args.save_all_seed_models:
+        os.environ.pop("THESIS_MODEL_SAVE_SEED", None)
+    else:
+        os.environ["THESIS_MODEL_SAVE_SEED"] = str(DEFAULT_BASE_SEED)
 
     result = run_comparison(
         experiment_ids=experiment_ids,

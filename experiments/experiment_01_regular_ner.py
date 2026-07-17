@@ -16,6 +16,11 @@ from common import (
     write_result_json,
     write_split_runs_excel,
 )
+from error_analysis import (
+    annotate_error_types,
+    build_error_analysis_sheets,
+    model_display_name,
+)
 
 
 CORE_DIR = Path(__file__).resolve().parents[1] / "core"
@@ -188,10 +193,15 @@ def run() -> dict:
     f1 = eval_results.get("eval_overall_f1")
     precision = eval_results.get("eval_overall_precision")
     recall = eval_results.get("eval_overall_recall")
+    model_display = model_display_name(model_name)
+    split_condition = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
     metrics_df = pd.DataFrame(
         [
             {
                 "dataset_name": "ner_dataset.csv",
+                "model": model_display,
+                "split_condition": split_condition,
+                "seed": split_seed,
                 "f1": float(f1) if f1 is not None else None,
                 "precision": float(precision) if precision is not None else None,
                 "recall": float(recall) if recall is not None else None,
@@ -208,6 +218,38 @@ def run() -> dict:
     token_df = _build_token_level_df(detailed_df)
     token_predictions_df = _build_token_predictions(ds_eval, trainer, processor, label_list)
     extra_sheets = _build_extra_sheets(token_df, global_metrics)
+
+    # Rich error-analysis sheets (token_predictions has probabilities for calibration).
+    if token_predictions_df is not None and not token_predictions_df.empty:
+        token_predictions_df = annotate_error_types(
+            token_predictions_df, "true_label", "pred_label"
+        )
+        ea_sheets = build_error_analysis_sheets(
+            token_predictions_df,
+            experiment_name="Regular NER with DictaBERT",
+            model=model_display,
+            split_condition=split_condition,
+            seed=str(split_seed),
+            true_col="true_label",
+            pred_col="pred_label",
+            sentence_col="sentence_id",
+            token_idx_col="token_idx",
+            token_col="token",
+            confidence_col="prob",
+            extra_sheet_docs=[
+                ("token_predictions",
+                 "Per-token predictions with probability/entropy/margin and error_type."),
+                ("token_level", "Per-token true vs predicted label with is_correct flag."),
+                ("classification_report", "Token-level (sklearn) per-label precision/recall/F1."),
+                ("token_errors", "All misclassified tokens (no context window)."),
+                ("global_metrics", "Aggregate evaluation metrics reported by the trainer."),
+            ],
+        )
+        # ea sheets take precedence for shared names (e.g. confusion_matrix).
+        merged_sheets = dict(ea_sheets)
+        for name, sheet in extra_sheets.items():
+            merged_sheets.setdefault(name, sheet)
+        extra_sheets = merged_sheets
     extra_sheets["token_predictions"] = token_predictions_df
     metrics_file = write_result_excel(
         "exp01",

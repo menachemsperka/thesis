@@ -31,6 +31,33 @@ from common import write_result_excel, write_result_json
 
 
 # ---------------------------------------------------------------------------
+# Run-context resolution (model / split condition / seed)
+# ---------------------------------------------------------------------------
+
+# Maps a substring of THESIS_MODEL_NAME to a human-friendly display name.
+_MODEL_DISPLAY_NAMES: tuple[tuple[str, str], ...] = (
+    ("berel", "BEREL 3.0"),
+    ("dictabert", "DictaBERT"),
+    ("alephbertgimmel", "AlephBERT-Gimmel"),
+    ("hero", "HeRo"),
+)
+
+
+def _resolve_model_display() -> str:
+    """Map THESIS_MODEL_NAME (a model id or local path) to a friendly name."""
+    raw = (os.environ.get("THESIS_MODEL_NAME") or "").strip()
+    if not raw:
+        return "unknown"
+    lowered = raw.lower()
+    for needle, display in _MODEL_DISPLAY_NAMES:
+        if needle in lowered:
+            return display
+    # Fall back to the last path/id segment (e.g. "dicta-il/foo" -> "foo").
+    return raw.replace("\\", "/").rstrip("/").split("/")[-1] or raw
+
+
+
+# ---------------------------------------------------------------------------
 # Source file resolution
 # ---------------------------------------------------------------------------
 
@@ -270,6 +297,403 @@ def compute_metrics(df: pd.DataFrame, true_col: str = "true_label", pred_col: st
 
 
 # ---------------------------------------------------------------------------
+# Error-analysis helpers (confusion matrix, per-type metrics, error taxonomy)
+# ---------------------------------------------------------------------------
+
+def _split_bio(label: str) -> tuple[str, str]:
+    """Split a BIO tag into (prefix, entity_type). 'B-PER' -> ('B', 'PER')."""
+    label = str(label)
+    if "-" in label:
+        prefix, etype = label.split("-", 1)
+        return prefix, etype
+    return label, ""
+
+
+def classify_error(true_label: str, pred_label: str) -> str:
+    """Row-level NER error taxonomy for a single token."""
+    true_label = str(true_label)
+    pred_label = str(pred_label)
+    if true_label == pred_label:
+        return "correct"
+    true_o = true_label == "O"
+    pred_o = pred_label == "O"
+    if true_o and not pred_o:
+        return "false_positive"   # spurious entity predicted on a non-entity token
+    if pred_o and not true_o:
+        return "false_negative"   # real entity token predicted as O (missed)
+    # Both are non-O but differ.
+    _, true_etype = _split_bio(true_label)
+    _, pred_etype = _split_bio(pred_label)
+    if true_etype != pred_etype:
+        return "type_error"       # correct that it's an entity, wrong entity type
+    return "boundary_error"       # same entity type, wrong B/I boundary
+
+
+def build_confusion_matrix(
+    df: pd.DataFrame,
+    true_col: str = "true_label",
+    pred_col: str = "fused_pred_label",
+) -> pd.DataFrame:
+    """Token-level confusion matrix as a grid (rows = true tag, cols = predicted tag)."""
+    ct = pd.crosstab(
+        df[true_col].astype(str),
+        df[pred_col].astype(str),
+        rownames=["true \\ pred"],
+        colnames=[""],
+        dropna=False,
+    )
+    return ct.reset_index()
+
+
+def build_per_type_metrics(
+    df: pd.DataFrame,
+    model: str,
+    split_condition: str,
+    seed: str,
+    true_col: str = "true_label",
+    pred_col: str = "fused_pred_label",
+) -> pd.DataFrame:
+    """Entity-level precision/recall/F1/support per entity type (seqeval), long format."""
+    from seqeval.metrics import classification_report
+
+    y_true, y_pred = to_seqeval_lists(df, true_col, pred_col)
+    rows: list[dict] = []
+    if y_true:
+        try:
+            report = classification_report(
+                y_true, y_pred, output_dict=True, zero_division=0
+            )
+        except TypeError:
+            report = classification_report(y_true, y_pred, output_dict=True)
+        for label, metrics in report.items():
+            if not isinstance(metrics, dict):
+                continue
+            rows.append({
+                "model": model,
+                "split_condition": split_condition,
+                "seed": seed,
+                "entity_type": label,
+                "precision": metrics.get("precision"),
+                "recall": metrics.get("recall"),
+                "f1": metrics.get("f1-score"),
+                "support": metrics.get("support"),
+            })
+    return pd.DataFrame(rows)
+
+
+def build_error_type_summary(
+    df: pd.DataFrame,
+    model: str,
+    split_condition: str,
+    seed: str,
+    error_col: str = "error_type",
+) -> pd.DataFrame:
+    """Count of each token-level error type (long format)."""
+    counts = df[error_col].value_counts()
+    total = int(len(df))
+    rows = [{
+        "model": model,
+        "split_condition": split_condition,
+        "seed": seed,
+        "error_type": err,
+        "count": int(n),
+        "pct_of_tokens": (float(n) / total) if total else 0.0,
+    } for err, n in counts.items()]
+    return pd.DataFrame(rows)
+
+
+def build_error_examples(
+    df: pd.DataFrame,
+    model: str,
+    split_condition: str,
+    seed: str,
+    max_examples: int = 300,
+    context_window: int = 5,
+) -> pd.DataFrame:
+    """Qualitative sample of misclassified tokens with surrounding sentence context.
+
+    The target token is wrapped in >>> <<< inside the ``context`` column.
+    """
+    errors = df[df["error_type"] != "correct"]
+    if errors.empty:
+        return pd.DataFrame()
+
+    # Pre-build an ordered token list per sentence for context windows.
+    sent_lookup: dict = {}
+    for sid, sdf in df.sort_values("token_idx").groupby("sentence_id"):
+        sent_lookup[sid] = (
+            sdf["token"].astype(str).tolist(),
+            sdf["token_idx"].tolist(),
+        )
+
+    rows: list[dict] = []
+    for _, r in errors.head(max_examples).iterrows():
+        sid = r["sentence_id"]
+        tokens, idxs = sent_lookup.get(sid, ([], []))
+        try:
+            pos = idxs.index(r["token_idx"])
+        except ValueError:
+            pos = None
+        if pos is not None:
+            lo = max(0, pos - context_window)
+            hi = min(len(tokens), pos + context_window + 1)
+            ctx = (
+                tokens[lo:pos]
+                + [f">>> {tokens[pos]} <<<"]
+                + tokens[pos + 1:hi]
+            )
+            context = " ".join(ctx)
+        else:
+            context = str(r["token"])
+        rows.append({
+            "model": model,
+            "split_condition": split_condition,
+            "seed": seed,
+            "sentence_id": sid,
+            "token_idx": r["token_idx"],
+            "token": r["token"],
+            "true_label": r["true_label"],
+            "fused_pred_label": r["fused_pred_label"],
+            "error_type": r["error_type"],
+            "selected_source": r.get("selected_source", ""),
+            "selected_confidence": r.get("selected_confidence", ""),
+            "context": context,
+        })
+    return pd.DataFrame(rows)
+
+
+def build_confidence_analysis(
+    df: pd.DataFrame,
+    model: str,
+    split_condition: str,
+    seed: str,
+) -> pd.DataFrame:
+    """Reliability table: accuracy vs. selected_confidence bucket (calibration check)."""
+    d = df.copy()
+    d["is_correct"] = (d["error_type"] == "correct")
+    d["conf"] = pd.to_numeric(d["selected_confidence"], errors="coerce")
+    d = d[d["conf"].notna()]
+    if d.empty:
+        return pd.DataFrame()
+
+    bins = [0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0001]
+    labels = ["<0.5", "0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-0.95", "0.95-1.0"]
+    d["conf_bucket"] = pd.cut(d["conf"], bins=bins, labels=labels, right=False)
+
+    rows: list[dict] = []
+    for bucket, gdf in d.groupby("conf_bucket", observed=True):
+        n = int(len(gdf))
+        n_correct = int(gdf["is_correct"].sum())
+        rows.append({
+            "model": model,
+            "split_condition": split_condition,
+            "seed": seed,
+            "confidence_bucket": str(bucket),
+            "tokens": n,
+            "correct": n_correct,
+            "accuracy": (n_correct / n) if n else 0.0,
+            "mean_confidence": float(gdf["conf"].mean()),
+        })
+    # Overall correct-vs-incorrect mean confidence (calibration gap indicator).
+    correct_conf = d.loc[d["is_correct"], "conf"]
+    wrong_conf = d.loc[~d["is_correct"], "conf"]
+    rows.append({
+        "model": model,
+        "split_condition": split_condition,
+        "seed": seed,
+        "confidence_bucket": "ALL_correct",
+        "tokens": int(len(correct_conf)),
+        "correct": int(len(correct_conf)),
+        "accuracy": 1.0,
+        "mean_confidence": float(correct_conf.mean()) if len(correct_conf) else 0.0,
+    })
+    rows.append({
+        "model": model,
+        "split_condition": split_condition,
+        "seed": seed,
+        "confidence_bucket": "ALL_incorrect",
+        "tokens": int(len(wrong_conf)),
+        "correct": 0,
+        "accuracy": 0.0,
+        "mean_confidence": float(wrong_conf.mean()) if len(wrong_conf) else 0.0,
+    })
+    return pd.DataFrame(rows)
+
+
+def build_disagreement_analysis(
+    df: pd.DataFrame,
+    model: str,
+    split_condition: str,
+    seed: str,
+) -> pd.DataFrame:
+    """On disagreement tokens: how well the fusion router selected the correct source.
+
+    Reports fused accuracy vs. the *oracle* (best-possible) accuracy where at least
+    one source was correct — this quantifies how much fusion recovered.
+    """
+    dis = df[df["disagree"].astype(bool)].copy()
+    if dis.empty:
+        return pd.DataFrame([{
+            "model": model,
+            "split_condition": split_condition,
+            "seed": seed,
+            "disagreement_tokens": 0,
+            "note": "no disagreements",
+        }])
+
+    reg_ok = dis["regular_pred_label"].astype(str) == dis["true_label"].astype(str)
+    cas_ok = dis["cascade_pred_label"].astype(str) == dis["true_label"].astype(str)
+    fused_ok = dis["fused_pred_label"].astype(str) == dis["true_label"].astype(str)
+    oracle_ok = reg_ok | cas_ok
+    n = int(len(dis))
+
+    rows = [{
+        "model": model,
+        "split_condition": split_condition,
+        "seed": seed,
+        "disagreement_tokens": n,
+        "regular_correct": int(reg_ok.sum()),
+        "cascade_correct": int(cas_ok.sum()),
+        "fused_correct": int(fused_ok.sum()),
+        "oracle_correct": int(oracle_ok.sum()),
+        "fused_accuracy": float(fused_ok.mean()),
+        "oracle_accuracy": float(oracle_ok.mean()),
+        "router_recovery_rate": (
+            float(fused_ok.sum() / oracle_ok.sum()) if oracle_ok.sum() else 0.0
+        ),
+    }]
+    return pd.DataFrame(rows)
+
+
+def _extract_spans(labels: list[str]) -> list[tuple[int, int, str]]:
+    """Extract entity spans (start, end_exclusive, entity_type) from BIO labels."""
+    spans: list[tuple[int, int, str]] = []
+    cur_start = None
+    cur_type = None
+    for i, lab in enumerate(labels):
+        prefix, etype = _split_bio(str(lab))
+        if prefix == "B":
+            if cur_start is not None:
+                spans.append((cur_start, i, cur_type))  # type: ignore[arg-type]
+            cur_start, cur_type = i, etype
+        elif prefix == "I" and cur_start is not None and etype == cur_type:
+            continue
+        else:
+            if cur_start is not None:
+                spans.append((cur_start, i, cur_type))  # type: ignore[arg-type]
+            cur_start, cur_type = None, None
+    if cur_start is not None:
+        spans.append((cur_start, len(labels), cur_type))  # type: ignore[arg-type]
+    return spans
+
+
+def build_entity_length_analysis(
+    df: pd.DataFrame,
+    model: str,
+    split_condition: str,
+    seed: str,
+) -> pd.DataFrame:
+    """Entity-level recall grouped by true entity span length (in tokens)."""
+    rows_by_len: dict[int, list[int]] = {}
+    for sid, sdf in df.sort_values("token_idx").groupby("sentence_id"):
+        true_labels = sdf["true_label"].astype(str).tolist()
+        pred_labels = sdf["fused_pred_label"].astype(str).tolist()
+        true_spans = _extract_spans(true_labels)
+        pred_spans = set(_extract_spans(pred_labels))
+        for span in true_spans:
+            length = span[1] - span[0]
+            matched = 1 if span in pred_spans else 0
+            rows_by_len.setdefault(length, []).append(matched)
+
+    out: list[dict] = []
+    for length in sorted(rows_by_len):
+        matches = rows_by_len[length]
+        support = len(matches)
+        recovered = sum(matches)
+        out.append({
+            "model": model,
+            "split_condition": split_condition,
+            "seed": seed,
+            "entity_length_tokens": length,
+            "true_entities": support,
+            "correctly_detected": recovered,
+            "recall": (recovered / support) if support else 0.0,
+        })
+    return pd.DataFrame(out)
+
+
+# Ordered description of every sheet + key columns written to the workbook.
+_SHEET_DOCS: list[tuple[str, str]] = [
+    ("metrics",
+     "One row summarising this run. Entity-level seqeval F1/precision/recall over the "
+     "fused predictions, plus token counts, disagreement counts and how often each "
+     "source was selected. Columns: model, split_condition, seed identify the run."),
+    ("detailed_results",
+     "One row per aligned token. true_label vs fused_pred_label with each source's "
+     "prediction and probability. 'disagree' = the two sources disagreed. "
+     "'selected_source' / 'selected_confidence' = what fusion chose. "
+     "'error_type' = per-token error taxonomy (see error_type_summary)."),
+    ("confusion_matrix",
+     "Token-level confusion matrix. Rows = true BIO tag, columns = predicted fused tag; "
+     "cell = token count. Diagonal = correct. Read off which tags get confused."),
+    ("per_type_metrics",
+     "Entity-level (seqeval) precision/recall/F1/support per entity type, plus "
+     "micro/macro/weighted averages. 'support' = number of true entities of that type."),
+    ("error_type_summary",
+     "Count and % of each token-level error category: correct, false_positive "
+     "(spurious entity on a true-O token), false_negative (real entity token predicted O), "
+     "type_error (right that it is an entity, wrong type), boundary_error "
+     "(right type, wrong B/I boundary)."),
+    ("error_examples",
+     "Up to 300 misclassified tokens with sentence context. The offending token is "
+     "wrapped in >>> <<< in the 'context' column for qualitative reading."),
+    ("confidence_analysis",
+     "Reliability / calibration table: token accuracy per selected_confidence bucket, "
+     "plus mean confidence for correct vs incorrect tokens. A large gap between "
+     "ALL_correct and ALL_incorrect mean_confidence indicates useful confidence signal."),
+    ("disagreement_analysis",
+     "Only tokens where the two sources disagreed. Compares fused accuracy to the "
+     "'oracle' (best possible when at least one source was right). "
+     "router_recovery_rate = fused_correct / oracle_correct."),
+    ("entity_length_analysis",
+     "Entity-level recall grouped by true entity span length (in tokens). "
+     "Shows whether longer multi-token entities are harder to detect."),
+    ("regular_from_exp01",
+     "Raw Exp01 (Regular NER) token predictions used as the first fusion source."),
+    ("cascade_from_source",
+     "Raw Exp04/Exp05 (Cascaded Pipeline) token predictions used as the second source."),
+]
+
+
+def build_documentation_sheet(
+    experiment_name: str,
+    model: str,
+    split_condition: str,
+    seed: str,
+    cascade_source: str,
+) -> pd.DataFrame:
+    """Human-readable 'read me' sheet describing every other sheet in the workbook."""
+    header = [
+        {"section": "ABOUT", "item": "experiment", "description": experiment_name},
+        {"section": "ABOUT", "item": "model", "description": model},
+        {"section": "ABOUT", "item": "split_condition", "description": split_condition},
+        {"section": "ABOUT", "item": "seed", "description": str(seed)},
+        {"section": "ABOUT", "item": "cascade_source", "description": cascade_source},
+        {"section": "ABOUT", "item": "scope",
+         "description": "This workbook = ONE run (one model x one split_condition x one seed). "
+                        "Aggregate across seeds with aggregate_fusion_error_analysis.py."},
+        {"section": "ABOUT", "item": "metric_note",
+         "description": "F1/precision/recall are entity-level (seqeval). The confusion "
+                        "matrix and error_type_summary are token-level (BIO tags)."},
+    ]
+    sheets = [
+        {"section": "SHEET", "item": name, "description": desc}
+        for name, desc in _SHEET_DOCS
+    ]
+    return pd.DataFrame(header + sheets)
+
+
+# ---------------------------------------------------------------------------
 # Generic ready-fusion entry point
 # ---------------------------------------------------------------------------
 
@@ -321,8 +745,15 @@ def run_ready_fusion(
 
     disagreement_count = int(merged["disagree"].sum())
 
+    model_display = _resolve_model_display()
+    split_condition = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
+    split_seed = os.environ.get("THESIS_SPLIT_SEED", "42")
+
     metrics_df = pd.DataFrame([{
         "dataset_name": "ready_results_merge",
+        "model": model_display,
+        "split_condition": split_condition,
+        "seed": split_seed,
         "f1": f1,
         "precision": precision,
         "recall": recall,
@@ -339,11 +770,21 @@ def run_ready_fusion(
         for k, v in extra_info.items():
             metrics_df[k] = v
 
+    merged["model"] = model_display
+    merged["split_condition"] = split_condition
+    merged["seed"] = split_seed
+    merged["error_type"] = [
+        classify_error(t, p)
+        for t, p in zip(merged["true_label"], merged["fused_pred_label"])
+    ]
+
     detailed_cols = [
+        "model", "split_condition", "seed",
         "sentence_id", "token_idx", "token", "true_label",
         "regular_pred_label", "regular_prob",
         "cascade_pred_label", "cascade_prob",
         "disagree", "selected_source", "selected_confidence", "fused_pred_label",
+        "error_type",
     ]
     # Include any extra columns the strategy added
     for col in merged.columns:
@@ -351,12 +792,32 @@ def run_ready_fusion(
             detailed_cols.append(col)
     detailed_df = merged[[c for c in detailed_cols if c in merged.columns]]
 
+    # Error-analysis artifacts (per this model / split condition / seed run).
+    confusion_df = build_confusion_matrix(merged)
+    per_type_df = build_per_type_metrics(merged, model_display, split_condition, split_seed)
+    error_summary_df = build_error_type_summary(merged, model_display, split_condition, split_seed)
+    error_examples_df = build_error_examples(merged, model_display, split_condition, split_seed)
+    confidence_df = build_confidence_analysis(merged, model_display, split_condition, split_seed)
+    disagreement_df = build_disagreement_analysis(merged, model_display, split_condition, split_seed)
+    entity_length_df = build_entity_length_analysis(merged, model_display, split_condition, split_seed)
+    documentation_df = build_documentation_sheet(
+        experiment_name, model_display, split_condition, split_seed, cascade_source
+    )
+
     metrics_file = write_result_excel(
         experiment_id,
         f"{result_basename}_results",
         metrics_df,
         detailed_df,
         extra_sheets={
+            "documentation": documentation_df,
+            "confusion_matrix": confusion_df,
+            "per_type_metrics": per_type_df,
+            "error_type_summary": error_summary_df,
+            "error_examples": error_examples_df,
+            "confidence_analysis": confidence_df,
+            "disagreement_analysis": disagreement_df,
+            "entity_length_analysis": entity_length_df,
             "regular_from_exp01": regular_df,
             "cascade_from_source": cascade_df,
         },
@@ -367,6 +828,9 @@ def run_ready_fusion(
         "name": experiment_name,
         "description": description,
         "mode": "ready",
+        "model": model_display,
+        "split_condition": split_condition,
+        "seed": split_seed,
         "cascade_source": cascade_source,
         "source_exp01_xlsx": str(exp01_xlsx),
         "source_cascade_xlsx": str(cascade_xlsx),

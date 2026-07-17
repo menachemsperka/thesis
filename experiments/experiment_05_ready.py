@@ -21,6 +21,11 @@ import pandas as pd
 from seqeval.metrics import f1_score, precision_score, recall_score
 
 from common import write_result_excel, write_result_json
+from error_analysis import (
+    annotate_error_types,
+    build_error_analysis_sheets,
+    model_display_name,
+)
 
 
 def _resolve_exp04(env_var: str = "THESIS_READY_EXP04_XLSX") -> Path:
@@ -154,8 +159,15 @@ def run() -> dict:
 
     tokens_changed = int(consistent_df["consistency_changed"].sum())
 
+    model_display = model_display_name(os.environ.get("THESIS_MODEL_NAME"))
+    split_condition = os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default")
+    split_seed = os.environ.get("THESIS_SPLIT_SEED", "42")
+
     metrics_df = pd.DataFrame([{
         "dataset_name": "ready_from_exp04",
+        "model": model_display,
+        "split_condition": split_condition,
+        "seed": split_seed,
         "f1": f1,
         "precision": prec,
         "recall": rec,
@@ -171,12 +183,28 @@ def run() -> dict:
         "pred_label_before", "consistency_changed",
         "entity_prob", "bio_prob",
     ]].copy()
+    detailed_out = annotate_error_types(detailed_out, "true_label", "pred_label_after")
+
+    extra_sheets = build_error_analysis_sheets(
+        detailed_out,
+        experiment_name="AUC Cascaded Step-3 Consistency (Ready)",
+        model=model_display,
+        split_condition=split_condition,
+        seed=str(split_seed),
+        true_col="true_label",
+        pred_col="pred_label_after",
+        sentence_col="sentence_id",
+        token_idx_col="token_idx",
+        token_col="token",
+        confidence_col="entity_prob",
+    )
 
     metrics_file = write_result_excel(
         "exp05_ready",
         "cascaded_step3_consistent_ready_results",
         metrics_df,
         detailed_out,
+        extra_sheets=extra_sheets,
     )
 
     result = {

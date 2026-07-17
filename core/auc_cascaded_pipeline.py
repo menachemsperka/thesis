@@ -44,7 +44,9 @@ Suggested further ideas (not yet implemented)
 # Imports
 # ============================================================================
 from datasets import load_dataset
+import json
 import os
+import re
 import sys
 import torch
 import torch.nn as nn
@@ -104,6 +106,132 @@ def _env_float(name: str, default: float, minimum: float | None = None, maximum:
     if maximum is not None:
         value = min(maximum, value)
     return value
+
+
+def _sanitize_for_path(value, fallback="unknown"):
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        text = fallback
+    text = text.rstrip("/").split("/")[-1] or fallback
+    text = re.sub(r"[^A-Za-z0-9._=-]+", "_", text).strip("_")
+    return (text or fallback)[:160]
+
+
+def _save_cascaded_model_artifact(
+    model,
+    tokenizer,
+    entity_types,
+    best_entity_threshold,
+    best_bio_threshold,
+    metrics_history,
+    excel_path,
+):
+    """Save Exp04's custom cascaded model in an uploadable artifact folder.
+
+    This is a custom PyTorch architecture, not a plain
+    AutoModelForTokenClassification.  The folder is suitable for uploading to
+    Hugging Face as a model repository, and includes the full state dict,
+    tokenizer, encoder config, cascaded metadata, and loading notes.
+    """
+    save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
+    if not save_models_flag:
+        return None
+    # Restrict saving to a single designated seed (e.g. the first) when requested,
+    # so only one representative model per model/condition is kept for HF upload.
+    save_seed = (os.environ.get("THESIS_MODEL_SAVE_SEED") or "").strip()
+    current_seed = (os.environ.get("THESIS_SPLIT_SEED") or "42").strip()
+    if save_seed and save_seed != current_seed:
+        print(f"[Model Save Skipped] seed {current_seed} != save seed {save_seed}")
+        return None
+
+    project_root = os.path.dirname(os.path.dirname(__file__))
+    save_base = os.path.join(project_root, "outputs", "trained_models")
+    os.makedirs(save_base, exist_ok=True)
+
+    exp_id = os.environ.get("THESIS_CURRENT_EXP_ID", "exp04")
+    model_short = _sanitize_for_path(os.environ.get("THESIS_MODEL_NAME", BASE_MODEL_NAME), "model")
+    condition_key = _sanitize_for_path(os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default"), "default")
+    seed = _sanitize_for_path(os.environ.get("THESIS_SPLIT_SEED", "42"), "42")
+    save_name = f"{exp_id}_{model_short}_{condition_key}_seed{seed}"
+    save_path = os.path.join(save_base, save_name)
+    os.makedirs(save_path, exist_ok=True)
+
+    # Save the full cascaded model weights.  The state dict includes encoder,
+    # entity head, BIO head, and type head.
+    torch.save(model.state_dict(), os.path.join(save_path, "pytorch_model.bin"))
+
+    # Save tokenizer and encoder config for reconstruction.
+    tokenizer.save_pretrained(save_path)
+    try:
+        model.encoder.config.to_json_file(os.path.join(save_path, "base_encoder_config.json"))
+    except Exception:
+        pass
+
+    config_payload = {
+        "architecture": "CascadedNERModel",
+        "experiment_id": exp_id,
+        "base_model_name_or_path": BASE_MODEL_NAME,
+        "model_name_env": os.environ.get("THESIS_MODEL_NAME", BASE_MODEL_NAME),
+        "condition_key": os.environ.get("THESIS_CURRENT_CONDITION_KEY", "default"),
+        "seed": os.environ.get("THESIS_SPLIT_SEED", "42"),
+        "entity_types": list(entity_types),
+        "num_entity_types": len(entity_types),
+        "threshold_entity": float(best_entity_threshold),
+        "threshold_bio": float(best_bio_threshold),
+        "max_length": MAX_LENGTH,
+        "training_config": TRAINING_CONFIG,
+        "loss_config": LOSS_CONFIG,
+        "source_excel": str(excel_path),
+        "weights_file": "pytorch_model.bin",
+        "notes": (
+            "Custom cascaded NER model: shared transformer encoder plus three heads "
+            "(entity detection, B/I position, entity type). Load with the "
+            "CascadedNERModel class from core/auc_cascaded_pipeline.py, then call "
+            "load_state_dict(torch.load('pytorch_model.bin', map_location=device))."
+        ),
+    }
+    with open(os.path.join(save_path, "cascaded_config.json"), "w", encoding="utf-8") as f:
+        json.dump(config_payload, f, indent=2, ensure_ascii=False)
+
+    final_rows = [r for r in metrics_history if str(r.get("epoch")) == "final_optimised"]
+    with open(os.path.join(save_path, "metrics_summary.json"), "w", encoding="utf-8") as f:
+        json.dump({"final_optimised": final_rows}, f, indent=2, ensure_ascii=False)
+
+    readme = f"""# Exp04 Cascaded NER Model
+
+This folder contains a trained custom Exp04 cascaded Hebrew NER model.
+
+## Important
+
+This is **not** a plain `AutoModelForTokenClassification` checkpoint. It is a custom PyTorch architecture with:
+
+1. a shared transformer encoder,
+2. an entity-detection head,
+3. a B/I-position head,
+4. an entity-type head.
+
+## Files
+
+- `pytorch_model.bin` — full custom model `state_dict`.
+- `cascaded_config.json` — entity types, thresholds, training settings, and metadata.
+- `base_encoder_config.json` — encoder configuration used to rebuild the base transformer.
+- tokenizer files — saved with `tokenizer.save_pretrained`.
+- `metrics_summary.json` — final optimized metrics rows.
+
+## Inference note
+
+To use this model, rebuild `CascadedNERModel` from `core/auc_cascaded_pipeline.py`, create the base encoder from the saved encoder config, and load `pytorch_model.bin`.
+
+Best thresholds:
+
+- entity threshold: `{float(best_entity_threshold):.4f}`
+- BIO threshold: `{float(best_bio_threshold):.4f}`
+"""
+    with open(os.path.join(save_path, "README.md"), "w", encoding="utf-8") as f:
+        f.write(readme)
+
+    print(f"[Model Saved] {save_path}")
+    return save_path
 
 # ============================================================================
 # Configuration
@@ -1265,5 +1393,15 @@ if __name__ == "__main__":
         print(f"\nResults exported to {excel_path}")
     except Exception as e:
         print(f"Excel export failed: {e}")
+
+    _save_cascaded_model_artifact(
+        model=model,
+        tokenizer=tokenizer,
+        entity_types=entity_types,
+        best_entity_threshold=best_te,
+        best_bio_threshold=best_tb,
+        metrics_history=metrics_history,
+        excel_path=excel_path,
+    )
 
     print("\nDone.")
