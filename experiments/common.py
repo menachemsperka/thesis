@@ -143,6 +143,7 @@ def resolve_model_source() -> tuple[str, bool]:
 
 
 def configure_model_environment() -> tuple[str, bool]:
+    os.environ.setdefault("THESIS_DELETE_MODELS_AFTER_TRAIN", "1")
     model_name, is_local = resolve_model_source()
     os.environ["THESIS_MODEL_NAME"] = model_name
     os.environ["THESIS_MODEL_LOCAL_ONLY"] = "1" if is_local else "0"

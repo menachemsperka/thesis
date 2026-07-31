@@ -276,6 +276,11 @@ def train_and_evaluate_bert_crf(model, ds_train, ds_eval, data_collator, tokeniz
     if num_train_epochs > 0.0:
         trainer.train()
     evaluation_results = trainer.evaluate()
+
+    from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+    cleanup_training_artifacts_if_enabled()
+
     return trainer, evaluation_results
 
 

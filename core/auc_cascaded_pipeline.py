@@ -1397,4 +1397,8 @@ if __name__ == "__main__":
         excel_path=excel_path,
     )
 
+    from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+    cleanup_training_artifacts_if_enabled()
+
     print("\nDone.")

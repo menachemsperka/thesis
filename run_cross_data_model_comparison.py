@@ -101,7 +101,8 @@ Environment Variables
 ``THESIS_SAVE_TRAINED_MODELS``
     Set to ``1`` to save trained models for later reuse (fusion experiments).
 ``THESIS_DELETE_MODELS_AFTER_TRAIN``
-    Default ``1`` for Exp10: delete checkpoint directories after training; Excel/JSON outputs are kept.
+    Default ``1``: delete checkpoint directories after training (all experiments); Excel/JSON outputs are kept.
+    Set to ``0`` to keep ``outputs/trained_models/`` for Hugging Face upload.
 ``THESIS_CROSS_BASE_MODE``
     Base artifact mode: ``auto`` / ``reuse`` / ``retrain``.
 ``THESIS_DEBUG``
@@ -1008,22 +1009,35 @@ def _ensure_base_artifacts_crf(
     base_mem[key] = entry
     base_index[key] = entry
     _save_base_index(base_index_path, base_index)
+
+    from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+    cleanup_training_artifacts_if_enabled()
+
     return entry, False
 
 
-def _consolidate_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Path | None:
-    """Merge per-run Exp10 error-analysis workbooks into one cross-comparison file."""
+def _consolidate_error_analysis_workbooks(
+    rows: list[dict[str, Any]],
+    ts: str,
+    *,
+    experiment_id_prefixes: tuple[str, ...] | None = None,
+    output_stem: str = "consolidated_error_analysis",
+) -> Path | None:
+    """Merge error-analysis sheets from per-run metrics workbooks into one file."""
     import shutil
     import tempfile
 
-    exp10_prefixes = ("exp10_regular", "exp10_cascade", "exp10_fusion_ready", "exp10_svm_ready")
     metrics_paths: list[Path] = []
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             continue
+        status = str(row.get("status", "")).strip().lower()
+        if status.startswith("error"):
+            continue
         exp_id = str(row.get("experiment_id", "")).strip()
-        if not any(exp_id == p for p in exp10_prefixes):
+        if experiment_id_prefixes and not any(exp_id == p for p in experiment_id_prefixes):
             continue
         mf = str(row.get("metrics_file", "")).strip()
         if not mf or mf in seen or not Path(mf).exists():
@@ -1039,19 +1053,30 @@ def _consolidate_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Pa
     except Exception:
         return None
 
-    out_path = COMPARISON_DIR / f"consolidated_error_analysis_exp10_{ts}.xlsx"
+    out_path = COMPARISON_DIR / f"{output_stem}_{ts}.xlsx"
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         for i, src in enumerate(metrics_paths):
-            dest = tmp_dir / f"exp10_run_{i:04d}_{src.name}"
+            dest = tmp_dir / f"run_{i:04d}_{src.name}"
             shutil.copy2(src, dest)
         merge(str(tmp_dir), str(out_path))
-    latest = COMPARISON_DIR / "consolidated_error_analysis_exp10_latest.xlsx"
+    latest = COMPARISON_DIR / f"{output_stem}_latest.xlsx"
     if latest.exists():
         latest.unlink()
     shutil.copy2(out_path, latest)
-    _log(f"Consolidated Exp10 error-analysis workbook: {out_path}")
+    _log(f"Consolidated error-analysis workbook ({len(metrics_paths)} runs): {out_path}")
     return out_path
+
+
+def _consolidate_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Path | None:
+    """Merge per-run Exp10 error-analysis workbooks into one cross-comparison file."""
+    exp10_prefixes = ("exp10_regular", "exp10_cascade", "exp10_fusion_ready", "exp10_svm_ready")
+    return _consolidate_error_analysis_workbooks(
+        rows,
+        ts,
+        experiment_id_prefixes=exp10_prefixes,
+        output_stem="consolidated_error_analysis_exp10",
+    )
 
 
 def _ensure_base_artifacts(
@@ -1126,6 +1151,11 @@ def _ensure_base_artifacts(
     base_mem[key] = entry
     base_index[key] = entry
     _save_base_index(base_index_path, base_index)
+
+    from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+    cleanup_training_artifacts_if_enabled()
+
     return entry, False
 
 
@@ -2308,6 +2338,15 @@ def run_comparison(
                     elapsed = time.time() - t0
                     _log(f"  F1={_fmt(metrics.get('f1'))} ({elapsed:.1f}s)")
 
+                    if not str(metrics.get("status", "")).startswith("error"):
+                        if is_training or exp_id in {"06_svm_ready", "10_svm_ready"}:
+                            try:
+                                from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+                                cleanup_training_artifacts_if_enabled()
+                            except Exception:
+                                pass
+
                     rows.append({
                         "model_key": next(k for k, v in MODEL_REGISTRY.items() if v["model_id"] == model_id),
                         "model_id": model_id,
@@ -2672,11 +2711,21 @@ def run_comparison(
     ts = _now_ts()
 
     exp10_error_analysis_path = None
+    all_error_analysis_path = None
     if any(str(e).startswith("10") for e in experiment_ids):
         try:
             exp10_error_analysis_path = _consolidate_exp10_error_analysis(rows, ts)
         except Exception as exc:
             _log(f"Exp10 consolidated error-analysis export skipped: {exc}")
+    try:
+        all_error_analysis_path = _consolidate_error_analysis_workbooks(
+            rows,
+            ts,
+            experiment_id_prefixes=None,
+            output_stem="consolidated_error_analysis_all",
+        )
+    except Exception as exc:
+        _log(f"Full consolidated error-analysis export skipped: {exc}")
 
     # ── Excel ─────────────────────────────────────────────────────────
     xlsx_path = COMPARISON_DIR / f"cross_comparison_{ts}.xlsx"
@@ -2719,6 +2768,20 @@ def run_comparison(
                 ]
             )
             note_df.to_excel(writer, sheet_name="exp10_error_analysis", index=False)
+        if all_error_analysis_path and all_error_analysis_path.exists():
+            note_all = pd.DataFrame(
+                [
+                    {
+                        "item": "consolidated_error_analysis_all",
+                        "path": str(all_error_analysis_path),
+                        "description": (
+                            "Merged error-analysis sheets from every successful run in this comparison "
+                            "(all experiments × models × conditions × seeds)."
+                        ),
+                    }
+                ]
+            )
+            note_all.to_excel(writer, sheet_name="error_analysis_index", index=False)
 
     latest_xlsx = COMPARISON_DIR / "cross_comparison_latest.xlsx"
     latest_xlsx_effective = latest_xlsx
@@ -2969,6 +3032,8 @@ if __name__ == "__main__":
     condition_sources = [x.strip() for x in args.condition_sources.split(",") if x.strip()]
     condition_keys = [x.strip() for x in args.condition_keys.split(",") if x.strip()]
 
+    # Default: free disk after training; metrics/error-analysis workbooks are kept.
+    os.environ.setdefault("THESIS_DELETE_MODELS_AFTER_TRAIN", "1")
     # Always enable model saving for artifact reuse in future fusion runs.
     os.environ["THESIS_SAVE_TRAINED_MODELS"] = "1"
     # By default keep only the first seed's models (one per model/condition) for HF

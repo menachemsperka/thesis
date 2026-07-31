@@ -151,6 +151,11 @@ def run() -> dict:
     }
     out_path = write_result_json("exp04", "auc_cascaded_pipeline", result)
     result["result_file"] = str(out_path)
+
+    from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+    cleanup_training_artifacts_if_enabled()
+
     return result
 
 

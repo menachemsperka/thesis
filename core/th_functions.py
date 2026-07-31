@@ -225,9 +225,11 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     
     # Evaluate the model
     evaluation_results = trainer.evaluate()
-    
- 
-    #print(evaluation_df)
+
+    from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+    cleanup_training_artifacts_if_enabled()
+
     return trainer, evaluation_results
 
 # Example usage:
