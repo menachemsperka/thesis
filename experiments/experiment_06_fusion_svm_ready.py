@@ -65,11 +65,6 @@ def _save_router_artifact(router, info: dict) -> str:
     save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
     if not save_models_flag:
         return ""
-    # Restrict saving to a single designated seed (e.g. the first) when requested.
-    save_seed = (os.environ.get("THESIS_MODEL_SAVE_SEED") or "").strip()
-    current_seed = (os.environ.get("THESIS_SPLIT_SEED") or "42").strip()
-    if save_seed and save_seed != current_seed:
-        return ""
 
     project_root = Path(__file__).resolve().parents[1]
     save_base = project_root / "outputs" / "trained_models"

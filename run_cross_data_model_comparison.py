@@ -29,14 +29,20 @@ Ready experiments:
 * ``06_learned_ready``
 * ``06_ensemble_ready``
 * ``06_svm_ready``
+* ``10_regular`` — BERT-CRF regular NER (train or reuse)
+* ``10_cascade`` — Cascaded pipeline with CRF + Step-3 consistency (train or reuse)
+* ``10_fusion_ready`` — Fusion of Exp10 regular + cascaded CRF outputs (inference)
+* ``10_svm_ready`` — SVM router fusion on Exp10 CRF outputs (inference)
 
 Outputs
 -------
 * ``outputs/cross_comparison/cross_comparison_<timestamp>.xlsx``
 * ``outputs/cross_comparison/cross_comparison_latest.xlsx``
+* ``outputs/cross_comparison/consolidated_error_analysis_exp10_<timestamp>.xlsx`` (when Exp10 is selected)
 * ``outputs/cross_comparison/cross_comparison_<timestamp>.json``
 * ``outputs/cross_comparison/cross_comparison_latest.json``
 * ``outputs/cross_comparison/cross_comparison_base_ready_index.json``
+* ``outputs/cross_comparison/cross_comparison_base_crf_ready_index.json``
 
 Usage
 -----
@@ -58,6 +64,15 @@ Run ready consistency + all ready fusion variants without retraining:
 ::
 
     python run_cross_data_model_comparison.py --experiments 05_ready,06_ready,06_normalized_ready,06_entropy_ready,06_learned_ready,06_ensemble_ready,06_svm_ready --models dictabert,berel --base-mode reuse
+
+Run Experiment 10 (BERT-CRF + cascaded CRF fusion):
+
+::
+
+    python run_cross_data_model_comparison.py --experiments 10_regular,10_cascade,10_fusion_ready,10_svm_ready --models dictabert,berel --base-mode auto
+
+Teaching guide for Experiment 10: ``experiments/experiment_10_README.md`` (CRF math, file map, lab exercises).
+Also documented in ``theisis overview.md`` Section 12A.
 
 Run the default comparison set:
 
@@ -85,6 +100,8 @@ Environment Variables
     Seed count for exp07/exp08 preparation (default: ``20`` for publication-quality).
 ``THESIS_SAVE_TRAINED_MODELS``
     Set to ``1`` to save trained models for later reuse (fusion experiments).
+``THESIS_DELETE_MODELS_AFTER_TRAIN``
+    Default ``1`` for Exp10: delete checkpoint directories after training; Excel/JSON outputs are kept.
 ``THESIS_CROSS_BASE_MODE``
     Base artifact mode: ``auto`` / ``reuse`` / ``retrain``.
 ``THESIS_DEBUG``
@@ -187,6 +204,10 @@ EXP_NAMES: dict[str, str] = {
     "06_learned_ready": "Fusion Learned Weights (Ready)",
     "06_ensemble_ready": "Fusion Ensemble Rules (Ready)",
     "06_svm_ready": "SVM Router Fusion (Ready)",
+    "10_regular": "Regular NER (BERT-CRF)",
+    "10_cascade": "Cascaded Pipeline (CRF + Consistency)",
+    "10_fusion_ready": "Fusion Regular-CRF + Cascaded-CRF (Ready)",
+    "10_svm_ready": "SVM Router Fusion CRF (Ready)",
 }
 
 EXP_SCRIPTS: dict[str, str] = {
@@ -201,6 +222,10 @@ EXP_SCRIPTS: dict[str, str] = {
     "06_learned_ready": "experiment_06_fusion_learned_weights_ready",
     "06_ensemble_ready": "experiment_06_fusion_ensemble_rules_ready",
     "06_svm_ready": "experiment_06_fusion_svm_ready",
+    "10_regular": "experiment_10_regular_ner_crf",
+    "10_cascade": "experiment_10_cascaded_pipeline_crf",
+    "10_fusion_ready": "experiment_10_fusion_crf_ready",
+    "10_svm_ready": "experiment_10_fusion_svm_ready",
     "07": "experiment_07_sentence_split_strategy",
     "08": "experiment_08_llm_augmentation",
 }
@@ -216,8 +241,10 @@ READY_DEPENDENT_EXP_IDS: set[str] = {
     "06_svm_ready",
 }
 
+EXP10_READY_DEPENDENT_EXP_IDS: set[str] = {"10_fusion_ready", "10_svm_ready"}
+
 # Experiments that require expensive GPU training (vs cheap inference).
-TRAINING_EXP_IDS: set[str] = {"01", "03", "04"}
+TRAINING_EXP_IDS: set[str] = {"01", "03", "04", "10_regular", "10_cascade"}
 
 # Drop the non-paper multilabel stratified split variants from cross-comparison.
 EXCLUDED_CONDITION_KEYS: set[str] = {
@@ -893,6 +920,138 @@ def _set_ready_env(exp01_metrics_file: str, exp04_metrics_file: str) -> None:
 def _clear_ready_env() -> None:
     os.environ.pop("THESIS_READY_EXP01_XLSX", None)
     os.environ.pop("THESIS_READY_EXP04_XLSX", None)
+
+
+def _is_valid_base_entry_crf(entry: dict[str, Any]) -> bool:
+    needed = [
+        "exp10_regular_metrics_file",
+        "exp10_regular_result_file",
+        "exp10_cascade_metrics_file",
+        "exp10_cascade_result_file",
+    ]
+    for k in needed:
+        p = str(entry.get(k, "")).strip()
+        if not p or not Path(p).exists():
+            return False
+    return True
+
+
+def _set_ready_env_crf(exp10_regular_metrics_file: str, exp10_cascade_metrics_file: str) -> None:
+    os.environ["THESIS_READY_EXP10_REGULAR_XLSX"] = exp10_regular_metrics_file
+    os.environ["THESIS_READY_EXP10_CASCADE_XLSX"] = exp10_cascade_metrics_file
+
+
+def _clear_ready_env_crf() -> None:
+    os.environ.pop("THESIS_READY_EXP10_REGULAR_XLSX", None)
+    os.environ.pop("THESIS_READY_EXP10_CASCADE_XLSX", None)
+
+
+def _ensure_base_artifacts_crf(
+    *,
+    model_id: str,
+    model_display: str,
+    condition: dict[str, Any],
+    base_mode: str,
+    base_mem: dict[str, dict[str, Any]],
+    base_index: dict[str, dict[str, Any]],
+    base_index_path: Path,
+) -> tuple[dict[str, Any], bool]:
+    key = _base_cache_key(model_id, condition)
+    if key in base_mem and _is_valid_base_entry_crf(base_mem[key]):
+        return base_mem[key], True
+
+    existing = base_index.get(key)
+    if base_mode in {"auto", "reuse"} and isinstance(existing, dict) and _is_valid_base_entry_crf(existing):
+        base_mem[key] = existing
+        return existing, True
+
+    if base_mode == "reuse":
+        raise RuntimeError(
+            "Base mode is 'reuse' but no valid cached Exp10 CRF artifacts were found for "
+            f"{model_display} / {condition.get('short_label', condition.get('key', 'unknown condition'))}."
+        )
+
+    _log(
+        f"Preparing Exp10 CRF base artifacts (10_regular + 10_cascade) | {model_display} | "
+        f"{condition.get('short_label', condition.get('key', 'condition'))}"
+    )
+
+    _set_presplit_env(condition["train_path"], condition["eval_path"])
+    os.environ["THESIS_CURRENT_CONDITION_KEY"] = str(condition.get("key", "default"))
+    try:
+        os.environ["THESIS_CURRENT_EXP_ID"] = "exp10_regular"
+        payload_reg = _import_experiment("10_regular").run()
+        os.environ["THESIS_CURRENT_EXP_ID"] = "exp10_cascade"
+        payload_cas = _import_experiment("10_cascade").run()
+    finally:
+        _clear_presplit_env()
+        os.environ.pop("THESIS_CURRENT_EXP_ID", None)
+        os.environ.pop("THESIS_CURRENT_CONDITION_KEY", None)
+
+    entry = {
+        "model_id": model_id,
+        "condition_key": condition.get("key"),
+        "condition_label": condition.get("label"),
+        "train_path": str(condition["train_path"]),
+        "eval_path": str(condition["eval_path"]),
+        "updated_at": datetime.now().isoformat(),
+        "exp10_regular_metrics_file": str(payload_reg.get("metrics_file", "")),
+        "exp10_regular_result_file": str(payload_reg.get("result_file", "")),
+        "exp10_cascade_metrics_file": str(payload_cas.get("metrics_file", "")),
+        "exp10_cascade_result_file": str(payload_cas.get("result_file", "")),
+    }
+    if not _is_valid_base_entry_crf(entry):
+        raise RuntimeError(
+            "Failed to materialize valid Exp10 CRF base artifacts (10_regular/10_cascade)."
+        )
+
+    base_mem[key] = entry
+    base_index[key] = entry
+    _save_base_index(base_index_path, base_index)
+    return entry, False
+
+
+def _consolidate_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Path | None:
+    """Merge per-run Exp10 error-analysis workbooks into one cross-comparison file."""
+    import shutil
+    import tempfile
+
+    exp10_prefixes = ("exp10_regular", "exp10_cascade", "exp10_fusion_ready", "exp10_svm_ready")
+    metrics_paths: list[Path] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        exp_id = str(row.get("experiment_id", "")).strip()
+        if not any(exp_id == p for p in exp10_prefixes):
+            continue
+        mf = str(row.get("metrics_file", "")).strip()
+        if not mf or mf in seen or not Path(mf).exists():
+            continue
+        seen.add(mf)
+        metrics_paths.append(Path(mf))
+
+    if not metrics_paths:
+        return None
+
+    try:
+        from merge_error_analysis_excels import merge
+    except Exception:
+        return None
+
+    out_path = COMPARISON_DIR / f"consolidated_error_analysis_exp10_{ts}.xlsx"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        for i, src in enumerate(metrics_paths):
+            dest = tmp_dir / f"exp10_run_{i:04d}_{src.name}"
+            shutil.copy2(src, dest)
+        merge(str(tmp_dir), str(out_path))
+    latest = COMPARISON_DIR / "consolidated_error_analysis_exp10_latest.xlsx"
+    if latest.exists():
+        latest.unlink()
+    shutil.copy2(out_path, latest)
+    _log(f"Consolidated Exp10 error-analysis workbook: {out_path}")
+    return out_path
 
 
 def _ensure_base_artifacts(
@@ -1753,6 +1912,9 @@ def run_comparison(
     base_index_path = COMPARISON_DIR / "cross_comparison_base_ready_index.json"
     base_index = _load_base_index(base_index_path)
     base_mem: dict[str, dict[str, Any]] = {}
+    base_crf_index_path = COMPARISON_DIR / "cross_comparison_base_crf_ready_index.json"
+    base_crf_index = _load_base_index(base_crf_index_path)
+    base_crf_mem: dict[str, dict[str, Any]] = {}
     checkpoint_path = Path(checkpoint_file).expanduser() if checkpoint_file else (
         COMPARISON_DIR / "cross_comparison_progress_latest.json"
     )
@@ -2081,6 +2243,43 @@ def run_comparison(
                                 base_index_path=base_index_path,
                             )
                             payload = _load_result_payload(base_entry[f"exp{exp_id}_result_file"])
+                            metrics = _extract_metrics(payload)
+                            if reused_base_artifacts:
+                                metrics["status"] = "ok_reused_base"
+
+                        elif exp_id in EXP10_READY_DEPENDENT_EXP_IDS:
+                            base_entry, reused_base_artifacts = _ensure_base_artifacts_crf(
+                                model_id=model_id,
+                                model_display=model_display,
+                                condition=cond,
+                                base_mode=base_mode,
+                                base_mem=base_crf_mem,
+                                base_index=base_crf_index,
+                                base_index_path=base_crf_index_path,
+                            )
+                            _set_ready_env_crf(
+                                base_entry["exp10_regular_metrics_file"],
+                                base_entry["exp10_cascade_metrics_file"],
+                            )
+                            try:
+                                mod = _import_experiment(exp_id)
+                                payload = mod.run()
+                                metrics = _extract_metrics(payload)
+                            finally:
+                                _clear_ready_env_crf()
+
+                        elif exp_id in {"10_regular", "10_cascade"}:
+                            base_entry, reused_base_artifacts = _ensure_base_artifacts_crf(
+                                model_id=model_id,
+                                model_display=model_display,
+                                condition=cond,
+                                base_mode=base_mode,
+                                base_mem=base_crf_mem,
+                                base_index=base_crf_index,
+                                base_index_path=base_crf_index_path,
+                            )
+                            result_key = "exp10_regular" if exp_id == "10_regular" else "exp10_cascade"
+                            payload = _load_result_payload(base_entry[f"{result_key}_result_file"])
                             metrics = _extract_metrics(payload)
                             if reused_base_artifacts:
                                 metrics["status"] = "ok_reused_base"
@@ -2472,6 +2671,13 @@ def run_comparison(
     # ==================================================================
     ts = _now_ts()
 
+    exp10_error_analysis_path = None
+    if any(str(e).startswith("10") for e in experiment_ids):
+        try:
+            exp10_error_analysis_path = _consolidate_exp10_error_analysis(rows, ts)
+        except Exception as exc:
+            _log(f"Exp10 consolidated error-analysis export skipped: {exc}")
+
     # ── Excel ─────────────────────────────────────────────────────────
     xlsx_path = COMPARISON_DIR / f"cross_comparison_{ts}.xlsx"
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
@@ -2499,6 +2705,20 @@ def run_comparison(
         ]].copy()
         details_df.to_excel(writer, sheet_name="experiment_details", index=False)
         doc_df.to_excel(writer, sheet_name="documentation", index=False)
+        if exp10_error_analysis_path and exp10_error_analysis_path.exists():
+            note_df = pd.DataFrame(
+                [
+                    {
+                        "item": "consolidated_error_analysis_exp10",
+                        "path": str(exp10_error_analysis_path),
+                        "description": (
+                            "Merged error-analysis sheets from all Exp10 runs in this comparison "
+                            "(regular CRF, cascaded CRF, fusion ready)."
+                        ),
+                    }
+                ]
+            )
+            note_df.to_excel(writer, sheet_name="exp10_error_analysis", index=False)
 
     latest_xlsx = COMPARISON_DIR / "cross_comparison_latest.xlsx"
     latest_xlsx_effective = latest_xlsx

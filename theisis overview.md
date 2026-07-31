@@ -29,7 +29,7 @@ The main scientific question is:
 
 > How do different Hebrew transformer models behave under different sentence split and augmentation conditions, and can cascaded or fused prediction architectures improve entity-level NER performance?
 
-The pipeline compares five experiments:
+The pipeline compares five **core** experiments (01–06 ready track):
 
 | Experiment ID | Method name | Core idea |
 |---|---|---|
@@ -38,6 +38,15 @@ The pipeline compares five experiments:
 | `05_ready` | Cascaded B/I Consistency | Post-processes `04` outputs to repair inconsistent `B-X` followed by `I-Y` predictions. |
 | `06_ready` | Confidence Fusion | Combines `01` and `04`; if they disagree, the more confident source wins. |
 | `06_svm_ready` | SVM Router Fusion | Combines `01` and `04`; an SVM learns which source to trust on disagreement tokens. |
+
+**Optional extension — Experiment 10 (BERT-CRF track):** same cross-comparison runner, separate base cache, adds CRF decoding and CRF fusion (see **Section 12A** and `experiments/experiment_10_README.md`).
+
+| Experiment ID | Method name | Core idea |
+|---|---|---|
+| `10_regular` | Regular BERT-CRF | Exp01-style single pass, but emissions + **linear-chain CRF** (Viterbi decode); **O-bias = 6**. |
+| `10_cascade` | Cascaded + CRF | Exp04-style three heads **plus** full-tag CRF head; Step-3 **B/I consistency** after decode. |
+| `10_fusion_ready` | CRF confidence fusion | Fuses `10_regular` and `10_cascade` ready Excel outputs (no retraining). |
+| `10_svm_ready` | CRF SVM router | Same router idea as `06_svm_ready` on CRF sources. |
 
 The selected models are:
 
@@ -428,6 +437,8 @@ The important beginner idea is:
 ## 7. Artifact Reuse and `--base-mode auto`
 
 Experiments `01` and `04` are expensive because they train transformer-based systems. Experiments `05_ready`, `06_ready`, and `06_svm_ready` are cheaper because they operate on already saved predictions.
+
+Experiment **10** adds another **training** pair (`10_regular`, `10_cascade`) with the same cost profile as `01`/`04`, plus **inference-only** fusion IDs (`10_fusion_ready`, `10_svm_ready`) analogous to the 06 ready track. Base artifacts are stored in `cross_comparison_base_crf_ready_index.json` (separate from the Exp01/Exp04 cache).
 
 The command uses:
 
@@ -1075,6 +1086,95 @@ Important limitation:
 
 ---
 
+## 12A. Experiment 10 — BERT-CRF Extension (Optional Cross-Comparison Branch)
+
+Experiment 10 implements **future-work items** from the thesis plan: replace (or augment) independent softmax tagging with a **Conditional Random Field** so **BIO transition structure** is learned during training, not only repaired afterward (compare Exp05_ready).
+
+It is **additive**: Experiments 01, 04, and 05/06 ready paths are unchanged. Exp10 uses its **own output folders** (`outputs/exp10_regular/`, `outputs/exp10_cascade/`, …) and **own base cache index**.
+
+**Teaching documentation:** `experiments/experiment_10_README.md`  
+**Code map:** `core/crf_layer.py`, `core/bert_crf_training.py`, `core/cascaded_crf_runtime.py`
+
+Example command:
+
+```bash
+python run_cross_data_model_comparison.py \
+  --experiments 10_regular,10_cascade,10_fusion_ready,10_svm_ready \
+  --models dictabert,berel \
+  --base-mode auto
+```
+
+### 12A.1 Experiment 10_regular — BERT + Emissions + CRF
+
+Architecture:
+
+1. Hebrew transformer encoder (same registry as Exp01).
+2. Linear layer producing emission scores $e_t(k)$ for each tag $k$ at token $t$.
+3. **Linear-chain CRF** with transition matrix $A$ of size $(K+2)\times(K+2)$ (START/STOP states).
+
+Training minimizes **CRF negative log-likelihood** (forward algorithm for $\log Z(x)$). Inference uses **Viterbi** to obtain $\hat{\mathbf{y}}$.
+
+**Class imbalance:** bias of the `O` tag in the emission layer is initialized to **6** (Souza et al. 2019).
+
+Mathematically, for gold sequence $\mathbf{y}^*$:
+
+$$
+\mathcal{L}_{CRF} = \log Z(x) - s(\mathbf{y}^*),
+\quad
+s(\mathbf{y}) = \sum_t \left( A_{y_{t-1},y_t} + e_t(y_t) \right).
+$$
+
+This is the same structural idea as classical NER-CRF, but emissions come from **BERT** rather than hand-crafted features.
+
+### 12A.2 Experiment 10_cascade — Cascaded Heads + Full-Tag CRF
+
+Exp04 trains three heads (entity, B/I, type) and **composes** their outputs. Exp10 **retains** those heads for diagnostic step F1, and adds a **joint head** over full BIO-type labels with CRF loss.
+
+**Pipeline span F1** for reporting uses **Viterbi** on the joint head (word-level aggregated emissions). Optional post-decode rule:
+
+$$
+\text{if } \hat{b}_i=B-X \text{ and } \hat{b}_{i+1}=I-Y \text{ with } X\neq Y,\ \text{reconcile types (Exp05 idea)}.
+$$
+
+Controlled by `THESIS_STEP3_BI_TYPE_RECONCILE=1` in the cascaded wrapper script.
+
+### 12A.3 Experiment 10_fusion_ready — Confidence Fusion on CRF Outputs
+
+Identical arbitration to Exp06_ready, but inputs are:
+
+- regular CRF token predictions (`token_predictions` sheet), and
+- cascaded CRF token predictions (`detailed_results`, `eval_mode=predicted`).
+
+For token $i$, if $\hat{y}_i^{reg} \neq \hat{y}_i^{cas}$:
+
+$$
+\hat{y}_i^{fused} =
+\begin{cases}
+\hat{y}_i^{reg}, & p_i^{reg} \geq p_i^{cas},\\
+\hat{y}_i^{cas}, & p_i^{reg} < p_i^{cas}.
+\end{cases}
+$$
+
+### 12A.4 Experiment 10_svm_ready — SVM Router on CRF Disagreements
+
+Same feature vector and LinearSVC objective as Section 12 (`06_svm_ready`), applied to **CRF** disagreement tokens. Router targets:
+
+$$
+z_i \in \{regular, cascade\}
+$$
+
+only when exactly one of $\hat{y}_i^{reg}, \hat{y}_i^{cas}$ equals $y_i$.
+
+### 12A.5 Caching, Cleanup, and Error Analysis
+
+**Base cache:** `_ensure_base_artifacts_crf` trains or reuses `10_regular` + `10_cascade` per $(m,c)$ and records paths in `cross_comparison_base_crf_ready_index.json`.
+
+**Disk cleanup:** after training, checkpoint directories may be deleted (`THESIS_DELETE_MODELS_AFTER_TRAIN=1`) while **Excel/JSON metrics are retained**.
+
+**Consolidated error analysis:** when any Exp10 ID is selected, the runner merges error-analysis workbooks into `outputs/cross_comparison/consolidated_error_analysis_exp10_<timestamp>.xlsx`.
+
+---
+
 ## 13. Evaluation Metric: Entity-Level Precision, Recall, and F1
 
 The primary metric is strict entity-level F1 using seqeval-style evaluation.
@@ -1368,7 +1468,9 @@ $$
 
 ### Step 8: Ensure Base Artifacts
 
-For `01`, `04`, and all ready experiments, the runner ensures that matching Exp01 and Exp04 artifacts exist.
+For `01`, `04`, and all ready experiments **on the 01/04 track**, the runner ensures that matching Exp01 and Exp04 artifacts exist.
+
+For Experiment **10**, Step 8 applies the same idea via `_ensure_base_artifacts_crf` for `10_regular` + `10_cascade` (separate index file).
 
 If missing:
 
@@ -1389,6 +1491,13 @@ For `05_ready`, `06_ready`, and `06_svm_ready`, the runner injects:
 ```text
 THESIS_READY_EXP01_XLSX
 THESIS_READY_EXP04_XLSX
+```
+
+For `10_fusion_ready` and `10_svm_ready`, the runner injects:
+
+```text
+THESIS_READY_EXP10_REGULAR_XLSX
+THESIS_READY_EXP10_CASCADE_XLSX
 ```
 
 Then the ready experiment reads exactly those matched files.
@@ -1486,6 +1595,8 @@ $$
 
 `05_ready`, `06_ready`, and `06_svm_ready` are not independent training methods. They are downstream methods applied to Exp01 and/or Exp04 outputs.
 
+Experiment **10** ready fusion methods depend on **`10_regular` + `10_cascade`** outputs (not on Exp01/Exp04).
+
 The dependency graph is:
 
 ```text
@@ -1498,6 +1609,11 @@ Exp04 ─── Exp05_ready
 Exp01 ─┐
        ├── Exp06_svm_ready
 Exp04 ─┘
+
+Exp10_regular ─┐
+               ├── Exp10_fusion_ready
+Exp10_cascade ─┤
+               └── Exp10_svm_ready
 ```
 
 ### 18.4 SVM Ready Fusion Is Exploratory

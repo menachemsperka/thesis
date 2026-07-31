@@ -136,13 +136,6 @@ def _save_cascaded_model_artifact(
     save_models_flag = (os.environ.get("THESIS_SAVE_TRAINED_MODELS") or "").strip() == "1"
     if not save_models_flag:
         return None
-    # Restrict saving to a single designated seed (e.g. the first) when requested,
-    # so only one representative model per model/condition is kept for HF upload.
-    save_seed = (os.environ.get("THESIS_MODEL_SAVE_SEED") or "").strip()
-    current_seed = (os.environ.get("THESIS_SPLIT_SEED") or "42").strip()
-    if save_seed and save_seed != current_seed:
-        print(f"[Model Save Skipped] seed {current_seed} != save seed {save_seed}")
-        return None
 
     project_root = os.path.dirname(os.path.dirname(__file__))
     save_base = os.path.join(project_root, "outputs", "trained_models")
