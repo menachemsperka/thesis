@@ -8,7 +8,7 @@ import shutil
 
 import pandas as pd
 
-from common import configure_model_environment, get_experiment_output_dir, is_debug_enabled, now_timestamp, write_result_json, write_split_runs_excel
+from common import configure_model_environment, get_experiment_output_dir, is_debug_enabled, now_timestamp, subprocess_env_for_core, write_result_json, write_split_runs_excel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -90,7 +90,7 @@ def run() -> dict:
     run_kwargs = {
         "cwd": str(CORE_DIR),
         "check": False,
-        "env": {**os.environ, "PYTHONIOENCODING": "utf-8"},
+        "env": subprocess_env_for_core(),
     }
     if not debug:
         run_kwargs.update({

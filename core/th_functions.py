@@ -354,7 +354,9 @@ def merge_subtokens(df):
     """
     Merge rows with subtokens (starting with ##) into one row and use the first label for the full word.
     """
-    print(df.head(5))
+    debug = (os.environ.get("THESIS_DEBUG") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if debug:
+        print(df.head(5))
     merged_rows = []
     current_token = ""
     current_label = None
@@ -377,7 +379,8 @@ def merge_subtokens(df):
     # Add the last token
     if current_token:
         merged_rows.append({'token': current_token, 'label': current_label})
-    print(pd.DataFrame(merged_rows))
+    if debug:
+        print(pd.DataFrame(merged_rows))
     # Create a DataFrame from merged rows
     return pd.DataFrame(merged_rows)
 
@@ -385,7 +388,9 @@ def merge_subtokens(df):
 def transform_df(df):
     #print("Columns in DataFrame:", df.columns)
     # Filter out the CLS and SEP tokens
-    df.to_csv('before.csv', encoding='utf-8-sig')
+    debug = (os.environ.get("THESIS_DEBUG") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if debug:
+        df.to_csv('before.csv', encoding='utf-8-sig')
     df = merge_subtokens(df)
     df.to_csv('afetr.csv',encoding='utf-8-sig')
     filtered_df = df[~df['token'].isin(['[CLS]', '[SEP]'])]

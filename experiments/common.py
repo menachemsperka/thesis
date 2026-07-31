@@ -94,6 +94,19 @@ def is_debug_enabled() -> bool:
     return DEBUG or env_value in {"1", "true", "yes", "on"}
 
 
+def subprocess_env_for_core(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for ``subprocess`` runs with ``cwd=core/`` (package imports need project root)."""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    if extra:
+        env.update(extra)
+    root = str(PROJECT_ROOT)
+    path = env.get("PYTHONPATH", "")
+    parts = [p for p in path.split(os.pathsep) if p]
+    if root not in parts:
+        env["PYTHONPATH"] = root + (os.pathsep + path if path else "")
+    return env
+
+
 @contextlib.contextmanager
 def suppress_output_if_needed(debug: bool | None = None):
     use_debug = is_debug_enabled() if debug is None else debug

@@ -661,7 +661,10 @@ def run_cascaded_crf_pipeline() -> str:
             df_details.to_excel(writer, sheet_name="detailed_results", index=False)
     print(f"\nResults exported to {excel_path}")
 
-    from core.model_cleanup import cleanup_training_artifacts_if_enabled
+    try:
+        from core.model_cleanup import cleanup_training_artifacts_if_enabled
+    except ModuleNotFoundError:
+        from model_cleanup import cleanup_training_artifacts_if_enabled
 
     cleanup_training_artifacts_if_enabled()
 

@@ -22,7 +22,7 @@ import shutil
 
 import pandas as pd
 
-from common import configure_model_environment, get_experiment_output_dir, is_debug_enabled, now_timestamp, write_result_json
+from common import configure_model_environment, get_experiment_output_dir, is_debug_enabled, now_timestamp, subprocess_env_for_core, write_result_json
 from model_cleanup import cleanup_training_artifacts
 
 
@@ -80,11 +80,11 @@ def run() -> dict:
     run_kwargs = {
         "cwd": str(CORE_DIR),
         "check": False,
-        "env": {
-            **os.environ,
-            "PYTHONIOENCODING": "utf-8",
-            "THESIS_STEP3_BI_TYPE_RECONCILE": "1",
-        },
+        "env": subprocess_env_for_core(
+            {
+                "THESIS_STEP3_BI_TYPE_RECONCILE": "1",
+            }
+        ),
     }
     if not debug:
         run_kwargs.update(

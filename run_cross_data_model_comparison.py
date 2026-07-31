@@ -1369,6 +1369,14 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
         return {"source": "saved", "generated": False, "augmentation_model": aug_model}
 
     _log("Generating augmented versions of exp07 splits...")
+    if force_rerun:
+        _log("Force rebuild: deleting cached exp07+aug split JSON files...")
+        if EXP07_AUG_SPLITS_DIR.exists():
+            for path in EXP07_AUG_SPLITS_DIR.glob("*.json"):
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
     t0 = time.time()
 
     # Import augmentation machinery from experiment 08
@@ -1444,7 +1452,7 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
             aug_train_path = EXP07_AUG_SPLITS_DIR / aug_train_file
             aug_eval_path = EXP07_AUG_SPLITS_DIR / aug_eval_file
 
-            if aug_train_path.exists() and aug_eval_path.exists():
+            if not force_rerun and aug_train_path.exists() and aug_eval_path.exists():
                 _log(
                     f"  Augmentation skipped {aug_job_idx}/{total_aug_jobs} (already exists) | "
                     f"variant {variant_idx}/{len(all_variants)} | seed {seed_idx}/{len(seed_list)} (s{seed})"
