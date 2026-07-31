@@ -1197,9 +1197,17 @@ def _prepare_exp07_splits(source: str) -> dict[str, Any]:
     if mode == "auto" and ready:
         _log("Exp07 split artifacts valid; reusing.")
         return {"source": "saved", "reran_exp07": False}
-    _log("Running experiment 07 to generate split artifacts...")
-
+    _log("Regenerating exp07 split JSON artifacts from dataset (rerun)...")
     t0 = time.time()
+    from exp07_split_artifacts import regenerate_exp07_splits
+
+    regen_info = regenerate_exp07_splits(clear_existing=True)
+    _log(
+        f"Exp07 splits rebuilt from {regen_info.get('dataset')} "
+        f"({regen_info.get('source_sentences')} sentences, "
+        f"{len(regen_info.get('variants', []))} variants)."
+    )
+    _log("Running experiment 07 split audit...")
     mod07 = _import_experiment("07")
     mod07.run()
     elapsed = time.time() - t0
