@@ -1,8 +1,8 @@
 import importlib
 import evaluate
 import pandas as pd
-import chardet
 import th_functions as tf
+from hebrew_text_io import read_ner_dataset_csv, validate_hebrew_dataframe
 import os  # Add import for file handling
 import numpy as np
 from seqeval.metrics import classification_report
@@ -29,9 +29,8 @@ class PrepDataSetNERTraining:
         pass
 
     def load_and_prepare_data(self, file_path: str):
-        with open(file_path, 'rb') as f:
-            result = chardet.detect(f.read())
-        data = pd.read_csv(file_path, delimiter=',', encoding=result['encoding'])
+        data, encoding_used = read_ner_dataset_csv(file_path)
+        validate_hebrew_dataframe(data, context=f"ner_dataset ({encoding_used})")
         return data
 
     def run_training_steps(self, data):
@@ -57,6 +56,10 @@ class PrepDataSetNERTraining:
 
     def run_training_with_presplit(self, data, train_sentences, eval_sentences):
         """Train using pre-computed train/eval sentence lists (from experiment 07)."""
+        from hebrew_text_io import validate_hebrew_sentence_list
+
+        validate_hebrew_sentence_list(train_sentences, context="presplit train JSON")
+        validate_hebrew_sentence_list(eval_sentences, context="presplit eval JSON")
         model_name = _resolve_model_name()
         local_only = _local_only_enabled()
 

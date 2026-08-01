@@ -230,25 +230,46 @@ def train_and_evaluate_bert_crf(model, ds_train, ds_eval, data_collator, tokeniz
         seed_env = os.environ.get("THESIS_SPLIT_SEED", "42")
         model_short_env = model_id_env.replace("/", "_").replace("\\", "_").split("_")[-1]
         unique_run_name = f"{exp_id_env}_{model_short_env}_{cond_key_env}_seed{seed_env}"
-        default_out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_checkpoints", unique_run_name)
+        from core.model_cleanup import colab_trainer_scratch_dir, use_disk_minimal_colab_training
+
+        disk_minimal = use_disk_minimal_colab_training()
+        default_out_dir = (
+            colab_trainer_scratch_dir(unique_run_name)
+            if disk_minimal
+            else os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_checkpoints", unique_run_name
+            )
+        )
         sig = inspect.signature(TrainingArguments.__init__)
         colab_kwargs: dict[str, Any] = {
             "output_dir": default_out_dir,
             "num_train_epochs": num_train_epochs,
-            "save_strategy": "steps",
-            "save_steps": 100,
-            "eval_steps": 100,
-            "save_total_limit": 2,
-            "load_best_model_at_end": True,
-            "metric_for_best_model": "overall_f1",
             "fp16": True,
         }
-        if "save_only_model" in sig.parameters:
-            colab_kwargs["save_only_model"] = True
-        if "eval_strategy" in sig.parameters:
-            colab_kwargs["eval_strategy"] = "steps"
+        if disk_minimal:
+            colab_kwargs["save_strategy"] = "no"
+            colab_kwargs["load_best_model_at_end"] = False
+            if "eval_strategy" in sig.parameters:
+                colab_kwargs["eval_strategy"] = "no"
+            else:
+                colab_kwargs["evaluation_strategy"] = "no"
         else:
-            colab_kwargs["evaluation_strategy"] = "steps"
+            colab_kwargs.update(
+                {
+                    "save_strategy": "steps",
+                    "save_steps": 100,
+                    "eval_steps": 100,
+                    "save_total_limit": 2,
+                    "load_best_model_at_end": True,
+                    "metric_for_best_model": "overall_f1",
+                }
+            )
+            if "save_only_model" in sig.parameters:
+                colab_kwargs["save_only_model"] = True
+            if "eval_strategy" in sig.parameters:
+                colab_kwargs["eval_strategy"] = "steps"
+            else:
+                colab_kwargs["evaluation_strategy"] = "steps"
         training_args = TrainingArguments(**colab_kwargs)
     else:
         out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "tmp_trainer")

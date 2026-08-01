@@ -94,32 +94,49 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
         seed_env = os.environ.get("THESIS_SPLIT_SEED", "42")
         model_short_env = model_id_env.replace("/", "_").replace("\\", "_").split("_")[-1]
         unique_run_name = f"{exp_id_env}_{model_short_env}_{cond_key_env}_seed{seed_env}"
-        
-        default_out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_checkpoints", unique_run_name)
-        out_dir = output_path if output_path else default_out_dir
+
+        from core.model_cleanup import colab_trainer_scratch_dir, use_disk_minimal_colab_training
+
+        disk_minimal = use_disk_minimal_colab_training()
+        if disk_minimal:
+            out_dir = colab_trainer_scratch_dir(unique_run_name)
+        else:
+            default_out_dir = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_checkpoints", unique_run_name
+            )
+            out_dir = output_path if output_path else default_out_dir
         colab_kwargs = {
             "output_dir": out_dir,
             "num_train_epochs": num_train_epochs,
-            "save_strategy": "steps",
-            "save_steps": 100,
-            "eval_steps": 100,
-            "save_total_limit": 2,  # Reduced from 3 to limit disk space
-            "load_best_model_at_end": True,
-            "metric_for_best_model": "overall_f1",
-            "fp16": True,  # Automatically utilize GPU mixed precision if available
+            "fp16": True,
         }
-        
-        # Add save_only_model to prevent large optimizer.pt files from filling up Google Drive
         sig = inspect.signature(TrainingArguments.__init__)
-        if "save_only_model" in sig.parameters:
-            colab_kwargs["save_only_model"] = True
-            
-        # Handle recent Transformers versions where evaluation_strategy was renamed to eval_strategy
-        if "eval_strategy" in sig.parameters:
-            colab_kwargs["eval_strategy"] = "steps"
+        if disk_minimal:
+            # Cross-comparison / thesis runs: keep metrics only; do not fill Google Drive with checkpoints.
+            colab_kwargs["save_strategy"] = "no"
+            colab_kwargs["load_best_model_at_end"] = False
+            if "eval_strategy" in sig.parameters:
+                colab_kwargs["eval_strategy"] = "no"
+            else:
+                colab_kwargs["evaluation_strategy"] = "no"
         else:
-            colab_kwargs["evaluation_strategy"] = "steps"
-            
+            colab_kwargs.update(
+                {
+                    "save_strategy": "steps",
+                    "save_steps": 100,
+                    "eval_steps": 100,
+                    "save_total_limit": 2,
+                    "load_best_model_at_end": True,
+                    "metric_for_best_model": "overall_f1",
+                }
+            )
+            if "save_only_model" in sig.parameters:
+                colab_kwargs["save_only_model"] = True
+            if "eval_strategy" in sig.parameters:
+                colab_kwargs["eval_strategy"] = "steps"
+            else:
+                colab_kwargs["evaluation_strategy"] = "steps"
+
         training_args = TrainingArguments(**colab_kwargs)
     else:
         # Default local training arguments
@@ -149,7 +166,9 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     
     # Train the model
     if num_train_epochs > 0.0:
-        if is_colab:
+        from core.model_cleanup import use_disk_minimal_colab_training
+
+        if is_colab and not use_disk_minimal_colab_training():
             import glob
             import shutil
             # Try to resume from latest checkpoint safely if one exists in the specific run directory

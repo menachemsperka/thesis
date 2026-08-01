@@ -49,6 +49,9 @@ def cleanup_training_artifacts(project_root: Path | None = None) -> list[str]:
         root / "core" / "cascaded_model_artifact_crf",
         root / "core" / "tmp_trainer",
     ]
+    scratch = (os.environ.get("THESIS_COLAB_TRAINER_SCRATCH") or "/content/thesis_trainer_scratch").strip()
+    if scratch:
+        candidates.append(Path(scratch))
     for path in candidates:
         if path.exists():
             try:
@@ -79,3 +82,16 @@ def cleanup_training_artifacts_if_enabled(project_root: Path | None = None) -> N
             f"[Disk cleanup] Removed {len(removed)} checkpoint path(s) "
             f"(THESIS_DELETE_MODELS_AFTER_TRAIN=1)."
         )
+
+
+def colab_trainer_scratch_dir(unique_run_name: str) -> str:
+    """Prefer Colab VM disk for Trainer temp files (avoid filling Google Drive)."""
+    base = (os.environ.get("THESIS_COLAB_TRAINER_SCRATCH") or "/content/thesis_trainer_scratch").strip()
+    path = os.path.join(base, unique_run_name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def use_disk_minimal_colab_training() -> bool:
+    """When true, Colab training skips checkpoint saves on Drive (metrics-only runs)."""
+    return os.environ.get("THESIS_RUN_ENV") == "colab" and should_delete_models_after_train()

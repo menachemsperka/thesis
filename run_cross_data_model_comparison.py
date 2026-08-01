@@ -99,7 +99,9 @@ Environment Variables
 ``THESIS_CROSS_NUM_SEEDS``
     Seed count for exp07/exp08 preparation (default: ``20`` for publication-quality).
 ``THESIS_SAVE_TRAINED_MODELS``
-    Set to ``1`` to save trained models for later reuse (fusion experiments).
+    Cross-comparison default is off. Set to ``1`` or pass ``--save-trained-models`` to copy
+    weights into ``outputs/trained_models/`` (e.g. Hugging Face upload). Ready fusion (05/06/10)
+    uses metrics Excel only, not saved weights.
 ``THESIS_DELETE_MODELS_AFTER_TRAIN``
     Default ``1``: delete checkpoint directories after training (all experiments); Excel/JSON outputs are kept.
     Set to ``0`` to keep ``outputs/trained_models/`` for Hugging Face upload.
@@ -107,6 +109,10 @@ Environment Variables
     Base artifact mode: ``auto`` / ``reuse`` / ``retrain``.
 ``THESIS_DEBUG``
     Set to ``1`` for verbose subprocess output.
+``THESIS_CSV_ENCODING``
+    Force CSV decode (e.g. ``utf-8``, ``cp1255``) when auto-detection is wrong.
+``THESIS_SKIP_HEBREW_TEXT_VALIDATION``
+    Set to ``1`` to skip pre-training Hebrew / corruption checks (not recommended).
 """
 
 from __future__ import annotations
@@ -982,12 +988,18 @@ def _ensure_base_artifacts_crf(
     try:
         os.environ["THESIS_CURRENT_EXP_ID"] = "exp10_regular"
         payload_reg = _import_experiment("10_regular").run()
+        from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+        cleanup_training_artifacts_if_enabled()
         os.environ["THESIS_CURRENT_EXP_ID"] = "exp10_cascade"
         payload_cas = _import_experiment("10_cascade").run()
     finally:
         _clear_presplit_env()
         os.environ.pop("THESIS_CURRENT_EXP_ID", None)
         os.environ.pop("THESIS_CURRENT_CONDITION_KEY", None)
+        from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+        cleanup_training_artifacts_if_enabled()
 
     entry = {
         "model_id": model_id,
@@ -1009,10 +1021,6 @@ def _ensure_base_artifacts_crf(
     base_mem[key] = entry
     base_index[key] = entry
     _save_base_index(base_index_path, base_index)
-
-    from core.model_cleanup import cleanup_training_artifacts_if_enabled
-
-    cleanup_training_artifacts_if_enabled()
 
     return entry, False
 
@@ -1117,17 +1125,22 @@ def _ensure_base_artifacts(
     )
 
     _set_presplit_env(condition["train_path"], condition["eval_path"])
-    # Set context for model saving (used by th_functions.py)
     os.environ["THESIS_CURRENT_CONDITION_KEY"] = str(condition.get("key", "default"))
     try:
         os.environ["THESIS_CURRENT_EXP_ID"] = "exp01"
         payload01 = _import_experiment("01").run()
+        from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+        cleanup_training_artifacts_if_enabled()
         os.environ["THESIS_CURRENT_EXP_ID"] = "exp04"
         payload04 = _import_experiment("04").run()
     finally:
         _clear_presplit_env()
         os.environ.pop("THESIS_CURRENT_EXP_ID", None)
         os.environ.pop("THESIS_CURRENT_CONDITION_KEY", None)
+        from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+        cleanup_training_artifacts_if_enabled()
 
     entry = {
         "model_id": model_id,
@@ -1151,10 +1164,6 @@ def _ensure_base_artifacts(
     base_mem[key] = entry
     base_index[key] = entry
     _save_base_index(base_index_path, base_index)
-
-    from core.model_cleanup import cleanup_training_artifacts_if_enabled
-
-    cleanup_training_artifacts_if_enabled()
 
     return entry, False
 
@@ -1868,6 +1877,43 @@ def _paired_stats_rows(results_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Hebrew encoding guard (fail before long training runs)
+# ---------------------------------------------------------------------------
+def _validate_hebrew_corpus_and_splits() -> None:
+    from common import resolve_dataset
+    from split_io import load_split
+
+    core_dir = PROJECT_ROOT / "core"
+    if str(core_dir) not in sys.path:
+        sys.path.insert(0, str(core_dir))
+    from hebrew_text_io import read_ner_dataset_csv, validate_hebrew_dataframe
+
+    csv_path = resolve_dataset("ner_dataset.csv")
+    _log(f"Validating Hebrew text in {csv_path}...")
+    df, enc = read_ner_dataset_csv(csv_path)
+    validate_hebrew_dataframe(df, context=f"ner_dataset ({enc})")
+    _log(f"Dataset encoding OK ({enc}).")
+
+    meta_path = EXP07_SPLITS_DIR / "split_meta.json"
+    if not meta_path.exists():
+        _log("No exp07 split_meta.json yet; skipping split JSON spot-check.")
+        return
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    checked = 0
+    for vm in meta.get("variants", []):
+        train_file = vm.get("train_file")
+        if not train_file:
+            continue
+        path = EXP07_SPLITS_DIR / str(train_file)
+        if path.exists():
+            load_split(path)
+            checked += 1
+            break
+    if checked:
+        _log("Exp07 split JSON spot-check passed (Hebrew present).")
+
+
+# ---------------------------------------------------------------------------
 # Main comparison
 # ---------------------------------------------------------------------------
 def run_comparison(
@@ -2061,6 +2107,8 @@ def run_comparison(
             _log("Resolved augmentation model: N/A (augmentation skipped)")
         else:
             _log("Resolved augmentation model: unavailable")
+
+        _validate_hebrew_corpus_and_splits()
 
         base_conditions = _build_conditions(
             condition_sources=condition_sources,
@@ -2977,8 +3025,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save-models",
         action="store_true",
-        default=True,
-        help="Deprecated toggle; trained models are always saved to outputs/trained_models/.",
+        help="Deprecated alias for --save-trained-models.",
+    )
+    parser.add_argument(
+        "--save-trained-models",
+        action="store_true",
+        help=(
+            "Copy trained weights to outputs/trained_models/ after training. "
+            "Default is off (metrics-only) to save disk on Colab."
+        ),
     )
     parser.add_argument(
         "--save-all-seed-models",
@@ -3050,8 +3105,10 @@ if __name__ == "__main__":
 
     # Default: free disk after training; metrics/error-analysis workbooks are kept.
     os.environ.setdefault("THESIS_DELETE_MODELS_AFTER_TRAIN", "1")
-    # Always enable model saving for artifact reuse in future fusion runs.
-    os.environ["THESIS_SAVE_TRAINED_MODELS"] = "1"
+    if args.save_trained_models or args.save_models:
+        os.environ["THESIS_SAVE_TRAINED_MODELS"] = "1"
+    else:
+        os.environ.setdefault("THESIS_SAVE_TRAINED_MODELS", "0")
     # By default keep only the first seed's models (one per model/condition) for HF
     # upload; pass --save-all-seed-models to persist every seed instead.
     if args.save_all_seed_models:

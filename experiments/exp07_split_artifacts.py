@@ -476,6 +476,9 @@ def regenerate_exp07_splits(
     worker = PrepDataSetNERTraining()
     data = worker.load_and_prepare_data(str(ds))
     sentences = tf.train_data_fit(data)
+    from hebrew_text_io import validate_hebrew_sentence_list
+
+    validate_hebrew_sentence_list(sentences, context=f"exp07 source sentences ({ds})")
 
     splits_dir = get_splits_dir()
     if clear_existing and splits_dir.exists():

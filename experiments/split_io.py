@@ -30,6 +30,7 @@ Public API
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,12 @@ def load_split(path: Path) -> list[dict]:
             "text": str(item.get("text", "")),
             "labels": list(item.get("labels", [])),
         })
+    core_dir = PROJECT_ROOT / "core"
+    if str(core_dir) not in sys.path:
+        sys.path.insert(0, str(core_dir))
+    from hebrew_text_io import validate_hebrew_sentence_list
+
+    validate_hebrew_sentence_list(sentences, context=f"split file {path}")
     return sentences
 
 

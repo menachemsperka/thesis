@@ -377,23 +377,24 @@ class SentenceDataset:
 # Data loading — unified format: {tokens, bio_tags, entity_types}
 # ============================================================================
 def _read_csv_with_fallback(csv_path, encoding_override=None):
-    candidates = []
+    from hebrew_text_io import read_ner_dataset_csv
+
     if encoding_override:
+        prev = os.environ.get("THESIS_CSV_ENCODING")
         if isinstance(encoding_override, (list, tuple)):
-            candidates.extend(encoding_override)
+            os.environ["THESIS_CSV_ENCODING"] = str(encoding_override[0])
         else:
-            candidates.append(encoding_override)
-    candidates.extend(CSV_ENCODING_PREFERENCE)
-    seen, errors = set(), {}
-    for enc in candidates:
-        if not enc or enc in seen:
-            continue
-        seen.add(enc)
+            os.environ["THESIS_CSV_ENCODING"] = str(encoding_override)
         try:
-            return pd.read_csv(csv_path, encoding=enc), enc
-        except UnicodeDecodeError as e:
-            errors[enc] = str(e)
-    raise UnicodeError(f"Cannot decode {csv_path} with {list(seen)}: {errors}")
+            df, enc = read_ner_dataset_csv(csv_path)
+        finally:
+            if prev is None:
+                os.environ.pop("THESIS_CSV_ENCODING", None)
+            else:
+                os.environ["THESIS_CSV_ENCODING"] = prev
+        return df, enc
+    df, enc = read_ner_dataset_csv(csv_path)
+    return df, enc
 
 
 def merge_wordpieces(tokens, bio_tags, entity_types, preview_state=None):
