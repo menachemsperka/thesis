@@ -37,6 +37,7 @@ import json
 import os
 import sys
 from collections import OrderedDict
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -512,7 +513,7 @@ def run_cascaded_crf_pipeline() -> str:
 
     tokenizer = AutoTokenizer.from_pretrained(cap.BASE_MODEL_NAME, local_files_only=cap.MODEL_LOCAL_ONLY)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    collate = _collate_crf(tokenizer.pad_token_id)
+    collate = partial(_collate_crf, tokenizer.pad_token_id)
 
     val_ds = CascadedNERDatasetCRF(val_data, tokenizer, etype_to_id, tag_to_id)
     val_loader = DataLoader(val_ds, batch_size=cap.TRAINING_CONFIG["eval_batch_size"], collate_fn=collate)
