@@ -94,12 +94,12 @@ class CRFTrainer(Trainer):
             emissions = outputs.logits
             labels = inputs.get("labels")
             mask = inputs.get("attention_mask")
-            decoded = model.crf.viterbi_decode(emissions, mask)
+            decoded = model.crf.viterbi_decode(emissions, mask, labels=labels)
             batch_size, seq_len, num_labels = emissions.shape
-            pred_ids = emissions.new_full((batch_size, seq_len), fill_value=0, dtype=torch.long)
+            pred_ids = emissions.new_full((batch_size, seq_len), fill_value=-100, dtype=torch.long)
             for i, path in enumerate(decoded):
                 for t, tag in enumerate(path):
-                    if t < seq_len:
+                    if t < seq_len and tag != -100:
                         pred_ids[i, t] = tag
             loss = None
             if labels is not None and not prediction_loss_only:
@@ -190,11 +190,11 @@ def train_and_evaluate_bert_crf(model, ds_train, ds_eval, data_collator, tokeniz
         if getattr(predictions, "ndim", 0) == 3:
             predictions = predictions.argmax(axis=2)
         true_predictions = [
-            [label_list[pred] for (pred, lab) in zip(prediction, label) if lab != -100]
+            [label_list[pred] for (pred, lab) in zip(prediction, label) if lab != -100 and pred != -100]
             for prediction, label in zip(predictions, labels)
         ]
         true_labels = [
-            [label_list[lab] for (pred, lab) in zip(prediction, label) if lab != -100]
+            [label_list[lab] for (pred, lab) in zip(prediction, label) if lab != -100 and pred != -100]
             for prediction, label in zip(predictions, labels)
         ]
         if metric is not None:
@@ -349,7 +349,7 @@ def prepare_eval_results_crf(eval_ds, trainer, tokenizer, label_list):
         for t, p, l, tok in zip(item["labels"], preds_labels[i], item["labels"], tokens):
             true_label = _safe_label_name(t)
             pred_label = _safe_label_name(p)
-            if l != -100 and true_label is not None and pred_label is not None and not str(tok).startswith("["):
+            if l != -100 and int(p) != -100 and true_label is not None and pred_label is not None and not str(tok).startswith("["):
                 all_true.append(true_label)
                 all_pred.append(pred_label)
 

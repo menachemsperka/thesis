@@ -112,12 +112,13 @@ def _build_token_predictions(eval_ds, trainer, tokenizer, label_list: list[str])
         )
         true_ids = item["labels"]
         tokens = tokenizer.convert_ids_to_tokens(item["input_ids"])
+        labels_tensor = torch.tensor([true_ids], device=device)
         with torch.no_grad():
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             emissions = outputs.logits[0].cpu().numpy()
-            decoded = model.crf.viterbi_decode(outputs.logits, attention_mask)[0]
+            full_path = model.crf.viterbi_decode(outputs.logits, attention_mask, labels=labels_tensor)[0]
         token_id = 0
-        for tok_idx, (token, true_id, pred_id) in enumerate(zip(tokens, true_ids, decoded)):
+        for tok_idx, (token, true_id, pred_id) in enumerate(zip(tokens, true_ids, full_path)):
             true_label = _safe_label_name(int(true_id), label_list)
             pred_label = _safe_label_name(int(pred_id), label_list)
             if int(true_id) == -100 or true_label is None or pred_label is None or str(token).startswith("["):

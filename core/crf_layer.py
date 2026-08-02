@@ -105,26 +105,27 @@ class LinearChainCRF(nn.Module):
         """
         Log of the partition function ``log Z(x)`` via the forward algorithm.
 
-        ``Z(x)`` sums ``exp(score(y))`` over **all** tag sequences ``y`` compatible with the mask.
-        Training uses ``NLL = log Z - score(y*)`` so gradients push probability mass onto gold paths.
+        Only timesteps where ``mask`` is True participate in the chain (same as
+        ``_forward_scores``), so [CLS]/[SEP] and padding with ``labels == -100`` are skipped.
         """
         batch_size, seq_len, num_tags = emissions.shape
-        device = emissions.device
-        log_alpha = emissions.new_full((batch_size, num_tags), float("-inf"))
-        log_alpha[:, :] = emissions[:, 0, :] + self.transitions[self.start_idx, :num_tags]
-        log_alpha = torch.where(mask[:, 0:1], log_alpha, emissions.new_zeros(()))
+        log_z = emissions.new_zeros(batch_size)
 
-        for t in range(1, seq_len):
-            emit = emissions[:, t, :].unsqueeze(1)  # (B, 1, T)
-            trans = self.transitions[:num_tags, :num_tags].unsqueeze(0)  # (1, T, T)
-            prev = log_alpha.unsqueeze(2)  # (B, T, 1)
-            scores = prev + trans + emit
-            log_alpha = torch.logsumexp(scores, dim=1)
-            step_mask = mask[:, t].unsqueeze(1)
-            log_alpha = torch.where(step_mask, log_alpha, log_alpha.new_zeros(()))
-
-        log_alpha = log_alpha + self.transitions[:num_tags, self.end_idx].unsqueeze(0)
-        return torch.logsumexp(log_alpha, dim=1)
+        for b in range(batch_size):
+            valid_ts = mask[b].nonzero(as_tuple=False).flatten()
+            if valid_ts.numel() == 0:
+                continue
+            t0 = int(valid_ts[0].item())
+            log_alpha = emissions[b, t0] + self.transitions[self.start_idx, :num_tags]
+            for step in range(1, valid_ts.numel()):
+                t = int(valid_ts[step].item())
+                emit = emissions[b, t]
+                trans = self.transitions[:num_tags, :num_tags]
+                scores = log_alpha.unsqueeze(1) + trans + emit.unsqueeze(0)
+                log_alpha = torch.logsumexp(scores, dim=0)
+            log_alpha = log_alpha + self.transitions[:num_tags, self.end_idx]
+            log_z[b] = torch.logsumexp(log_alpha, dim=0)
+        return log_z
 
     def neg_log_likelihood(
         self,
@@ -137,6 +138,8 @@ class LinearChainCRF(nn.Module):
 
         This is the loss term added to the transformer training objective in Experiment 10.
         """
+        # Forward–backward / logsumexp in fp32 for numerical stability (especially with fp16 training).
+        emissions = emissions.float()
         mask = self._valid_mask(labels, attention_mask)
         gold = self._forward_scores(emissions, labels, mask)
         log_z = self._partition_function(emissions, mask)
@@ -146,47 +149,65 @@ class LinearChainCRF(nn.Module):
             return nll[valid].mean()
         return nll.mean()
 
+    def _viterbi_on_valid_steps(
+        self,
+        emissions: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> list[list[int]]:
+        """Viterbi on masked timesteps only; returns one tag id per sequence position."""
+        batch_size, seq_len, num_tags = emissions.shape
+        results: list[list[int]] = []
+        for b in range(batch_size):
+            full_path = [-100] * seq_len
+            valid_ts = mask[b].nonzero(as_tuple=False).flatten()
+            if valid_ts.numel() == 0:
+                results.append(full_path)
+                continue
+            t0 = int(valid_ts[0].item())
+            viterbi = emissions.new_full((valid_ts.numel(), num_tags), float("-inf"))
+            backpointers: list[torch.Tensor] = []
+            viterbi[0] = emissions[b, t0] + self.transitions[self.start_idx, :num_tags]
+            for step in range(1, valid_ts.numel()):
+                t = int(valid_ts[step].item())
+                broadcast = viterbi[step - 1].unsqueeze(1) + self.transitions[:num_tags, :num_tags]
+                best_scores, best_paths = broadcast.max(dim=0)
+                viterbi[step] = best_scores + emissions[b, t]
+                backpointers.append(best_paths)
+            terminal = viterbi[valid_ts.numel() - 1] + self.transitions[:num_tags, self.end_idx]
+            best_last = int(terminal.argmax().item())
+            tags: list[int] = [best_last]
+            for bp in reversed(backpointers):
+                best_last = int(bp[best_last].item())
+                tags.append(best_last)
+            tags.reverse()
+            for t_idx, tag in zip(valid_ts.tolist(), tags):
+                full_path[int(t_idx)] = int(tag)
+            results.append(full_path)
+        return results
+
     @torch.no_grad()
     def viterbi_decode(
         self,
         emissions: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
     ) -> list[list[int]]:
         """
         Viterbi decoding: best tag path per sequence in the batch.
 
-        Returns a list of length ``batch``; each inner list has one tag index per **valid**
-        time step (up to ``attention_mask`` length). Used at inference instead of per-token argmax.
-
-        Student exercise: compare Viterbi output to argmax on ``emissions`` alone on the same sentence.
+        When ``labels`` is provided, decoding uses the same mask as training (``labels != -100``).
+        Each returned path has length ``seq_len``; positions outside the mask are ``-100``.
         """
-        batch_size, seq_len, num_tags = emissions.shape
-        device = emissions.device
-        results: list[list[int]] = []
-
-        for b in range(batch_size):
-            if attention_mask is not None:
-                valid_len = int(attention_mask[b].sum().item())
-            else:
-                valid_len = seq_len
-            valid_len = max(0, min(valid_len, seq_len))
-
-            viterbi = emissions.new_full((valid_len, num_tags), float("-inf"))
-            backpointers: list[torch.Tensor] = []
-            viterbi[0] = emissions[b, 0] + self.transitions[self.start_idx, :num_tags]
-
-            for t in range(1, valid_len):
-                broadcast = viterbi[t - 1].unsqueeze(1) + self.transitions[:num_tags, :num_tags]
-                best_scores, best_paths = broadcast.max(dim=0)
-                viterbi[t] = best_scores + emissions[b, t]
-                backpointers.append(best_paths)
-
-            terminal = viterbi[valid_len - 1] + self.transitions[:num_tags, self.end_idx]
-            best_last = int(terminal.argmax().item())
-            best_path = [best_last]
-            for bp in reversed(backpointers):
-                best_last = int(bp[best_last].item())
-                best_path.append(best_last)
-            best_path.reverse()
-            results.append(best_path)
-        return results
+        emissions = emissions.float()
+        if labels is not None:
+            mask = self._valid_mask(labels, attention_mask)
+        elif attention_mask is not None:
+            mask = attention_mask.bool()
+        else:
+            mask = torch.ones(
+                emissions.shape[0],
+                emissions.shape[1],
+                dtype=torch.bool,
+                device=emissions.device,
+            )
+        return self._viterbi_on_valid_steps(emissions, mask)
