@@ -375,6 +375,26 @@ def _run_key(model_id: str, exp_id: str, condition_key: str) -> str:
     return f"{model_id}||exp{exp_id}||{condition_key}"
 
 
+def _checkpoint_exp_id(exp_id: str) -> str:
+    """Normalize CLI experiment id to checkpoint row ``experiment_id`` (e.g. ``exp10_regular``)."""
+    e = str(exp_id or "").strip()
+    if not e:
+        return e
+    return e if e.startswith("exp") else f"exp{e}"
+
+
+def _parse_rerun_experiment_ids(rerun_experiments: list[str] | None) -> set[str]:
+    if not rerun_experiments:
+        return set()
+    out: set[str] = set()
+    for raw in rerun_experiments:
+        for part in str(raw).split(","):
+            part = part.strip()
+            if part:
+                out.add(_checkpoint_exp_id(part))
+    return out
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -1929,6 +1949,7 @@ def run_comparison(
     condition_keys: list[str] | None = None,
     rebuild_from_checkpoint: bool = False,
     base_mode: str = "auto",
+    rerun_experiments: list[str] | None = None,
 ) -> dict:
     """Run all (model × data-condition × experiment) combinations.
 
@@ -2195,6 +2216,20 @@ def run_comparison(
             )
             if added_from_history:
                 _log(f"Backfilled {added_from_history} missing rows from historical cross-comparison JSON outputs.")
+            rerun_exp_ids = _parse_rerun_experiment_ids(rerun_experiments)
+            if rerun_exp_ids:
+                before = len(rows)
+                rows = [
+                    r
+                    for r in rows
+                    if str(r.get("experiment_id", "")).strip() not in rerun_exp_ids
+                ]
+                dropped = before - len(rows)
+                if dropped:
+                    _log(
+                        "Rerun experiments (checkpoint rows cleared): "
+                        f"{', '.join(sorted(rerun_exp_ids))} ({dropped} rows)"
+                    )
             # Only skip runs that succeeded; retry runs that had errors
             failed_keys: set[str] = set()
             for r in rows:
@@ -3050,6 +3085,15 @@ if __name__ == "__main__":
         help="Resume from saved progress checkpoint and skip completed runs.",
     )
     parser.add_argument(
+        "--rerun-experiments",
+        default=(os.environ.get("THESIS_CROSS_RERUN_EXPERIMENTS") or "").strip(),
+        help=(
+            "With --resume: drop matching experiment rows from the checkpoint and run them again "
+            "(comma-separated ids, e.g. 10_regular,10_cascade,10_fusion_ready,10_svm_ready). "
+            "Does not affect other completed runs."
+        ),
+    )
+    parser.add_argument(
         "--checkpoint-file",
         default=(os.environ.get("THESIS_CROSS_CHECKPOINT_FILE") or "").strip(),
         help=(
@@ -3102,6 +3146,7 @@ if __name__ == "__main__":
     model_keys = [x.strip() for x in args.models.split(",") if x.strip()]
     condition_sources = [x.strip() for x in args.condition_sources.split(",") if x.strip()]
     condition_keys = [x.strip() for x in args.condition_keys.split(",") if x.strip()]
+    rerun_experiments = [x.strip() for x in args.rerun_experiments.split(",") if x.strip()]
 
     # Default: free disk after training; metrics/error-analysis workbooks are kept.
     os.environ.setdefault("THESIS_DELETE_MODELS_AFTER_TRAIN", "1")
@@ -3129,4 +3174,5 @@ if __name__ == "__main__":
         condition_keys=condition_keys,
         rebuild_from_checkpoint=args.rebuild_from_checkpoint,
         base_mode=args.base_mode,
+        rerun_experiments=rerun_experiments or None,
     )
