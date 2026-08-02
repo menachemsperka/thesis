@@ -102,10 +102,14 @@ def _build_token_predictions(eval_ds, trainer, tokenizer, label_list: list[str])
 
     model = trainer.model
     model.eval()
+    device = next(model.parameters()).device
     rows = []
     for sentence_idx, item in enumerate(eval_ds, start=1):
-        input_ids = torch.tensor([item["input_ids"]])
-        attention_mask = torch.tensor([item.get("attention_mask", [1] * len(item["input_ids"]))])
+        input_ids = torch.tensor([item["input_ids"]], device=device)
+        attention_mask = torch.tensor(
+            [item.get("attention_mask", [1] * len(item["input_ids"]))],
+            device=device,
+        )
         true_ids = item["labels"]
         tokens = tokenizer.convert_ids_to_tokens(item["input_ids"])
         with torch.no_grad():
