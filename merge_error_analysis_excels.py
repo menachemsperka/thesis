@@ -66,7 +66,7 @@ def _identity(wb, file_name: str) -> str:
     return f"{label}  ({file_name})" if label else file_name
 
 
-def merge(input_dir: str, output_path: str) -> None:
+def merge(input_dir: str, output_path: str, *, progress_every: int = 50) -> None:
     output_stem = Path(output_path).stem  # e.g. "combined_error_analysis"
     files = sorted(
         p for p in Path(input_dir).glob("*.xlsx")
@@ -91,7 +91,10 @@ def merge(input_dir: str, output_path: str) -> None:
 
     skipped: list[str] = []
     merged = 0
-    for path in files:
+    n_files = len(files)
+    if progress_every > 0:
+        print(f"[merge] loading {n_files} workbook(s)...", flush=True)
+    for file_idx, path in enumerate(files):
         try:
             wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
         except (PermissionError, OSError) as exc:
@@ -99,6 +102,13 @@ def merge(input_dir: str, output_path: str) -> None:
             skipped.append(path.name)
             continue
         merged += 1
+        if progress_every > 0 and (
+            (file_idx + 1) % progress_every == 0 or (file_idx + 1) == n_files
+        ):
+            print(
+                f"[merge] loaded {file_idx + 1}/{n_files} workbook(s)...",
+                flush=True,
+            )
         title = _identity(wb, path.name)
 
         for sheet_name in wb.sheetnames:

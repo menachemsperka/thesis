@@ -3,7 +3,6 @@ import os
 
 import warnings
 import pandas as pd
-import evaluate
 import torch
 import inspect
 
@@ -70,9 +69,11 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     - metric_name: The name of the evaluation metric to load (default is "seqeval").
     - output_path: Custom output directory for the final model (used particularly in Colab workflows).
     """
-    # Load the evaluation metric (offline-safe fallback)
+    # Load the evaluation metric (offline-safe fallback; seqeval used if evaluate missing)
     metric = None
     try:
+        import evaluate
+
         metric = evaluate.load(metric_name)
     except Exception:
         metric = None

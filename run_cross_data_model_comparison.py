@@ -1058,36 +1058,70 @@ def _consolidate_error_analysis_workbooks(
 
     metrics_paths: list[Path] = []
     seen: set[str] = set()
+    skipped_error_status = 0
+    skipped_exp_filter = 0
+    empty_metrics_path = 0
+    missing_metrics_file = 0
+    duplicate_metrics_path = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
         status = str(row.get("status", "")).strip().lower()
         if status.startswith("error"):
+            skipped_error_status += 1
             continue
         exp_id = str(row.get("experiment_id", "")).strip()
         if experiment_id_prefixes and not any(exp_id == p for p in experiment_id_prefixes):
+            skipped_exp_filter += 1
             continue
         mf = str(row.get("metrics_file", "")).strip()
-        if not mf or mf in seen or not Path(mf).exists():
+        if not mf:
+            empty_metrics_path += 1
+            continue
+        if mf in seen:
+            duplicate_metrics_path += 1
+            continue
+        if not Path(mf).exists():
+            missing_metrics_file += 1
             continue
         seen.add(mf)
         metrics_paths.append(Path(mf))
 
+    _log(
+        f"Error-analysis [{output_stem}]: scan complete — "
+        f"to_merge={len(metrics_paths)} | missing_file={missing_metrics_file} | "
+        f"empty_path={empty_metrics_path} | error_status={skipped_error_status} | "
+        f"exp_filter={skipped_exp_filter} | duplicate_path={duplicate_metrics_path}"
+    )
+
     if not metrics_paths:
+        _log(f"Error-analysis [{output_stem}]: skipped (no metrics workbooks on disk).")
         return None
 
     try:
         from merge_error_analysis_excels import merge
-    except Exception:
+    except Exception as exc:
+        _log(
+            f"Error-analysis [{output_stem}]: skipped "
+            f"(could not import merge_error_analysis_excels: {exc})"
+        )
         return None
 
     out_path = COMPARISON_DIR / f"{output_stem}_{ts}.xlsx"
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
+        n_copy = len(metrics_paths)
+        _log(f"Error-analysis [{output_stem}]: copying {n_copy} workbook(s) to temp dir...")
         for i, src in enumerate(metrics_paths):
             dest = tmp_dir / f"run_{i:04d}_{src.name}"
             shutil.copy2(src, dest)
-        merge(str(tmp_dir), str(out_path))
+            if (i + 1) % 50 == 0 or (i + 1) == n_copy:
+                _log(f"Error-analysis [{output_stem}]: copy progress {i + 1}/{n_copy}")
+        _log(
+            f"Error-analysis [{output_stem}]: merging with openpyxl "
+            f"({n_copy} files; may take a long time on Google Drive)..."
+        )
+        merge(str(tmp_dir), str(out_path), progress_every=25)
     latest = COMPARISON_DIR / f"{output_stem}_latest.xlsx"
     if latest.exists():
         latest.unlink()
@@ -1950,6 +1984,7 @@ def run_comparison(
     rebuild_from_checkpoint: bool = False,
     base_mode: str = "auto",
     rerun_experiments: list[str] | None = None,
+    skip_consolidated_error_analysis: bool = False,
 ) -> dict:
     """Run all (model × data-condition × experiment) combinations.
 
@@ -2089,6 +2124,7 @@ def run_comparison(
 
         _log(f"Rebuild-only mode from checkpoint: {checkpoint_path}")
         _log(f"Rows used: {len(rows)}")
+        _log("Starting export post-processing (no training)...")
     else:
         # ── Prepare data conditions ───────────────────────────────────────
         print(f"\n{'-'*60}")
@@ -2486,6 +2522,7 @@ def run_comparison(
                     )
 
     total_elapsed = time.time() - comparison_start
+    _log(f"Export: building results table ({len(rows)} row(s))...")
     results_df = pd.DataFrame(rows)
     if "condition_group_key" not in results_df.columns:
         results_df["condition_group_key"] = results_df.get("condition_key")
@@ -2495,6 +2532,7 @@ def run_comparison(
         results_df["seed"] = None
 
     if "base_conditions" not in locals():
+        _log("Export: deriving base data conditions from results...")
         base_conditions = []
         seen_base_keys: set[str] = set()
         for _, r in results_df.iterrows():
@@ -2512,6 +2550,7 @@ def run_comparison(
     # ==================================================================
     # Post-processing: build analytical sheets
     # ==================================================================
+    _log(f"Export: {len(base_conditions)} base condition(s); aggregating metrics...")
 
     grouped = (
         results_df
@@ -2537,6 +2576,7 @@ def run_comparison(
             n_seeds=("seed", "nunique"),
         )
     )
+    _log(f"Export: aggregation done ({len(grouped)} group row(s))")
 
     # ── 1. Summary pivot (mean F1 +- SD across paired seeds)
     pivot_rows: list[dict[str, Any]] = []
@@ -2563,6 +2603,7 @@ def run_comparison(
             )
             pivot_rows.append(row)
     pivot_df = pd.DataFrame(pivot_rows)
+    _log("Export: summary pivot built")
 
     # ── 2. Exp07 deltas: each variant vs exp07 baseline (seed-aggregated means)
     try:
@@ -2672,7 +2713,9 @@ def run_comparison(
     deltas07aug_df = pd.DataFrame(delta07aug_rows) if delta07aug_rows else pd.DataFrame()
 
     # ── 3c. Publication-ready paired tests (same seeds, paired design)
+    _log("Export: computing paired significance tests...")
     paired_tests_df = _paired_stats_rows(results_df)
+    _log(f"Export: paired tests done ({len(paired_tests_df)} comparison(s))")
 
     # ── 4. Model comparison: same condition, head-to-head ────────────
     model_cmp_rows: list[dict] = []
@@ -2738,6 +2781,7 @@ def run_comparison(
     )
 
     # ── 6. Documentation sheet ────────────────────────────────────────
+    _log("Export: building documentation sheet metadata...")
     from split_io import build_thesis_documentation_df
     try:
         meta08 = _load_exp08_meta()
@@ -2805,28 +2849,14 @@ def run_comparison(
     )
 
     # ==================================================================
-    # Write outputs
+    # Write outputs (JSON/Excel first; consolidated error analysis is last and slow)
     # ==================================================================
     ts = _now_ts()
-
     exp10_error_analysis_path = None
     all_error_analysis_path = None
-    if any(str(e).startswith("10") for e in experiment_ids):
-        try:
-            exp10_error_analysis_path = _consolidate_exp10_error_analysis(rows, ts)
-        except Exception as exc:
-            _log(f"Exp10 consolidated error-analysis export skipped: {exc}")
-    try:
-        all_error_analysis_path = _consolidate_error_analysis_workbooks(
-            rows,
-            ts,
-            experiment_id_prefixes=None,
-            output_stem="consolidated_error_analysis_all",
-        )
-    except Exception as exc:
-        _log(f"Full consolidated error-analysis export skipped: {exc}")
 
     # ── Excel ─────────────────────────────────────────────────────────
+    _log("Export: writing cross_comparison Excel workbook...")
     xlsx_path = COMPARISON_DIR / f"cross_comparison_{ts}.xlsx"
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
         if not pivot_df.empty:
@@ -2882,6 +2912,8 @@ def run_comparison(
             )
             note_all.to_excel(writer, sheet_name="error_analysis_index", index=False)
 
+    _log(f"Export: Excel written -> {xlsx_path}")
+
     latest_xlsx = COMPARISON_DIR / "cross_comparison_latest.xlsx"
     latest_xlsx_effective = latest_xlsx
     try:
@@ -2898,6 +2930,7 @@ def run_comparison(
         )
 
     # ── JSON ──────────────────────────────────────────────────────────
+    _log("Export: writing cross_comparison JSON...")
     payload_out: dict[str, Any] = {
         "name": "Cross-Data × Multi-Model Comparison (Ready Setup)",
         "description": (
@@ -2936,6 +2969,35 @@ def run_comparison(
     _atomic_write_json(json_path, payload_out)
     latest_json = COMPARISON_DIR / "cross_comparison_latest.json"
     _atomic_write_json(latest_json, payload_out)
+    _log(f"Export: JSON written -> {json_path}")
+
+    skip_err = skip_consolidated_error_analysis or (
+        (os.environ.get("THESIS_SKIP_ERROR_ANALYSIS_CONSOLIDATION") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if skip_err:
+        _log(
+            "Export: skipped consolidated error-analysis "
+            "(--skip-consolidated-error-analysis or THESIS_SKIP_ERROR_ANALYSIS_CONSOLIDATION=1)."
+        )
+    else:
+        _log("Export: starting consolidated error-analysis workbooks (optional; often slow)...")
+        if any(str(e).startswith("10") for e in experiment_ids):
+            try:
+                exp10_error_analysis_path = _consolidate_exp10_error_analysis(rows, ts)
+            except Exception as exc:
+                _log(f"Exp10 consolidated error-analysis export skipped: {exc}")
+                traceback.print_exc()
+        try:
+            all_error_analysis_path = _consolidate_error_analysis_workbooks(
+                rows,
+                ts,
+                experiment_id_prefixes=None,
+                output_stem="consolidated_error_analysis_all",
+            )
+        except Exception as exc:
+            _log(f"Full consolidated error-analysis export skipped: {exc}")
+            traceback.print_exc()
 
     if not rebuild_from_checkpoint:
         _save_progress_checkpoint(
@@ -2950,6 +3012,8 @@ def run_comparison(
             total_runs=total_runs,
             started_at=started_at,
         )
+
+    total_elapsed = time.time() - comparison_start
 
     # Console summary
     print(f"\n{'='*75}")
@@ -3001,6 +3065,10 @@ def run_comparison(
     print(f"\n  Total elapsed: {total_elapsed:.0f}s")
     print(f"  Excel: {xlsx_path}")
     print(f"  JSON:  {json_path}")
+    if exp10_error_analysis_path and exp10_error_analysis_path.exists():
+        print(f"  Exp10 error analysis: {exp10_error_analysis_path}")
+    if all_error_analysis_path and all_error_analysis_path.exists():
+        print(f"  All error analysis: {all_error_analysis_path}")
 
     _log("Comparison complete.")
     return payload_out
@@ -3128,6 +3196,14 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--skip-consolidated-error-analysis",
+        action="store_true",
+        help=(
+            "Skip merging per-run metrics workbooks into consolidated_error_analysis_*.xlsx "
+            "(much faster rebuild; main cross_comparison JSON/Excel still written)."
+        ),
+    )
+    parser.add_argument(
         "--list-base-cache",
         action="store_true",
         help=(
@@ -3175,4 +3251,5 @@ if __name__ == "__main__":
         rebuild_from_checkpoint=args.rebuild_from_checkpoint,
         base_mode=args.base_mode,
         rerun_experiments=rerun_experiments or None,
+        skip_consolidated_error_analysis=args.skip_consolidated_error_analysis,
     )
