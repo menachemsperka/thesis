@@ -255,7 +255,12 @@ def run_comparison(
     for cfg in benchmarks:
         data_root = BENCHMARK_ROOT / "data" / cfg.key
         meta_path = data_root / "split_meta.json"
-        if prepare_only or ((not dry_run) and not meta_path.exists()):
+        if meta_path.exists() and not prepare_only:
+            continue
+        if meta_path.exists() and prepare_only:
+            _log(f"Prepare skipped (already on Drive): {cfg.display_name} → {data_root}")
+            continue
+        if (not dry_run) or prepare_only:
             _log(f"Preparing splits for {cfg.display_name}...")
             prepare_all_splits(
                 benchmark_key=cfg.key,
