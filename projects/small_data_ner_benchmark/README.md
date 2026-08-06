@@ -21,7 +21,7 @@ From repo root:
 ```bash
 python projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py --prepare-only
 python projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py --dry-run
-python projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py
+python projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py --resume --base-mode auto
 python projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py --resume --base-mode reuse
 ```
 
@@ -35,7 +35,7 @@ python projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py --res
 | `--regimes` | `small_300,full` |
 | `--num-seeds` / `--seeds` | Paired seeds (default 42–46) |
 | `--base-mode` | `auto` / `reuse` / `retrain` for Exp10 CRF base cache |
-| `--resume` | Continue from checkpoint |
+| `--resume` | Train from scratch if no checkpoint; otherwise continue (same flags every run) |
 | `--prepare-only` | Download HF data + write splits only |
 
 ## Outputs (same layout as main runner)

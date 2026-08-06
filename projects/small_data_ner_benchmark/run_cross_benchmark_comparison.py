@@ -326,6 +326,8 @@ def run_comparison(
         run_counter = len(completed)
         started_at = str(cp.get("started_at") or started_at)
         _log(f"Resume: {len(completed)} completed runs loaded from {checkpoint_path}")
+    elif resume:
+        _log(f"Resume requested but checkpoint not found: {checkpoint_path}. Starting fresh.")
 
     base_crf_mem: dict[str, dict[str, Any]] = {}
     base_crf_index = cross._load_base_index(BASE_CRF_INDEX_PATH)

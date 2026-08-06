@@ -9,6 +9,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+# Non-interactive Hub loads on Colab/CI (conll2003 and similar script datasets).
+os.environ.setdefault("HF_DATASETS_TRUST_REMOTE_CODE", "1")
+
 CONLL_TAG_NAMES = [
     "O",
     "B-PER",
@@ -106,29 +109,68 @@ def _load_dataset_from_snapshot(snapshot_dir: Path):
     raise RuntimeError(f"No parquet/json splits found under snapshot: {snapshot_dir}")
 
 
-def _load_hf_dataset(repo_id: str, cache_dir: Path, config_name: str | None = None):
-    from datasets import load_dataset
+def _trust_remote_code() -> bool:
+    raw = (os.environ.get("THESIS_HF_TRUST_REMOTE_CODE") or os.environ.get("HF_DATASETS_TRUST_REMOTE_CODE") or "1")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _snapshot_fallback(repo_id: str, cache_dir: Path):
     from huggingface_hub import snapshot_download
 
+    snapshot_dir = Path(
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            cache_dir=str(cache_dir),
+        )
+    )
+    return _load_dataset_from_snapshot(snapshot_dir)
+
+
+def _load_hf_dataset(repo_id: str, cache_dir: Path, config_name: str | None = None):
+    from datasets import load_dataset
+
+    trust = _trust_remote_code()
+    load_kwargs: dict[str, Any] = {"cache_dir": str(cache_dir), "trust_remote_code": trust}
+
+    def _try_load(target_id: str, config: str | None) -> Any:
+        if config:
+            return load_dataset(target_id, config, **load_kwargs)
+        return load_dataset(target_id, **load_kwargs)
+
+    last_err: Exception | None = None
     try:
-        if config_name:
-            return load_dataset(repo_id, config_name, cache_dir=str(cache_dir))
-        return load_dataset(repo_id, cache_dir=str(cache_dir))
+        return _try_load(repo_id, config_name)
+    except ValueError as exc:
+        last_err = exc
+        if "trust_remote_code" in str(exc).lower() or "custom code" in str(exc).lower():
+            load_kwargs["trust_remote_code"] = True
+            return _try_load(repo_id, config_name)
+        raise
     except RuntimeError as exc:
+        last_err = exc
         if "Dataset scripts are no longer supported" not in str(exc):
             raise
-        snapshot_dir = Path(
-            snapshot_download(
-                repo_id=repo_id,
-                repo_type="dataset",
-                cache_dir=str(cache_dir),
-            )
-        )
-        return _load_dataset_from_snapshot(snapshot_dir)
+    except Exception as exc:
+        last_err = exc
+
+    try:
+        return _snapshot_fallback(repo_id, cache_dir)
+    except Exception as snap_err:
+        raise RuntimeError(f"Failed to load dataset {repo_id!r} (config={config_name!r})") from (snap_err or last_err)
 
 
 def load_conll2003(cache_dir: Path) -> dict[str, list[dict]]:
-    ds = _load_hf_dataset("conll2003", cache_dir)
+    last_err: Exception | None = None
+    ds = None
+    for repo_id in ("conll2003", "tner/conll2003", "eriktks/conll2003"):
+        try:
+            ds = _load_hf_dataset(repo_id, cache_dir)
+            break
+        except Exception as exc:
+            last_err = exc
+    if ds is None:
+        raise RuntimeError("Failed to load CoNLL-2003 from Hub mirrors") from last_err
     token_col, label_col = _guess_columns(ds["train"].column_names)
     label_names = _label_names_from_feature(ds["train"], label_col)
     return {
