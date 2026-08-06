@@ -31,6 +31,9 @@ PROJECT_ROOT = BENCHMARK_ROOT.parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Public NER benchmarks (CoNLL, NEMO, BC5CDR) are not Hebrew corpora.
+os.environ.setdefault("THESIS_SKIP_HEBREW_TEXT_VALIDATION", "1")
+
 # Network / Colab env (proxy bypass) — must run before HF downloads
 import experiments.common  # noqa: F401, E402
 

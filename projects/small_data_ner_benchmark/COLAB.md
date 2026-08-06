@@ -27,6 +27,8 @@ os.environ["THESIS_RUN_ENV"] = "colab"
 os.environ["WANDB_DISABLED"] = "true"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HF_DATASETS_TRUST_REMOTE_CODE"] = "1"
+# Required for English/Latin benchmark CSVs (runner also sets this on import).
+os.environ["THESIS_SKIP_HEBREW_TEXT_VALIDATION"] = "1"
 
 %cd {REPO}
 ```
@@ -190,3 +192,16 @@ files.download("projects/small_data_ner_benchmark/outputs/cross_comparison/cross
 | `--resume` | Train if no checkpoint; otherwise skip finished runs |
 
 Equivalent entry point: `projects/small_data_ner_benchmark/run_benchmark.py`.
+
+---
+
+## Troubleshooting
+
+**`HebrewCorpusEncodingError` … Sample tokens: `['EU', 'rejects', …]`**  
+The main thesis loader assumes a Hebrew corpus. Benchmark runs must use an updated repo where `core/hebrew_text_io.py` honors `THESIS_SKIP_HEBREW_TEXT_VALIDATION`, and Colab setup sets that variable (see §0). Sync your Drive copy from git, re-run §0, then `--resume`.
+
+**Run 61+ (NEMO) starts training then hangs or is slow on seed**  
+Use a **GPU** runtime (§0). The stack trace through `torch.xpu.manual_seed_all` is often Colab CPU/XPU noise; real training needs CUDA.
+
+**180 runs all show `F1=N/A` in ~2s**  
+Usually the Hebrew CSV error above; fix that before expecting checkpoints or meaningful `--resume` progress.

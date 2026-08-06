@@ -134,6 +134,9 @@ def read_ner_dataset_csv(
             f"Tried: {_encoding_candidates(raw)}. Errors: {decode_errors[:5]}"
         )
 
+    if _skip_hebrew_validation():
+        return best_df, best_enc
+
     if best_score < min_hebrew_score:
         preview = ""
         if token_col in best_df.columns:
