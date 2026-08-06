@@ -1062,7 +1062,6 @@ def _consolidate_error_analysis_workbooks(
 ) -> Path | None:
     """Merge error-analysis sheets from per-run metrics workbooks into one file."""
     import shutil
-    import tempfile
 
     metrics_paths: list[Path] = []
     seen: set[str] = set()
@@ -1109,30 +1108,20 @@ def _consolidate_error_analysis_workbooks(
         _log(f"Error-analysis [{output_stem}]: skipped (no metrics workbooks on disk).")
         return None
 
-    try:
-        from merge_error_analysis_excels import merge
-    except Exception as exc:
-        _log(
-            f"Error-analysis [{output_stem}]: skipped "
-            f"(could not import merge_error_analysis_excels: {exc})"
-        )
-        return None
-
     out_path = COMPARISON_DIR / f"{output_stem}_{ts}.xlsx"
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
-        n_copy = len(metrics_paths)
-        _log(f"Error-analysis [{output_stem}]: copying {n_copy} workbook(s) to temp dir...")
-        for i, src in enumerate(metrics_paths):
-            dest = tmp_dir / f"run_{i:04d}_{src.name}"
-            shutil.copy2(src, dest)
-            if (i + 1) % 50 == 0 or (i + 1) == n_copy:
-                _log(f"Error-analysis [{output_stem}]: copy progress {i + 1}/{n_copy}")
-        _log(
-            f"Error-analysis [{output_stem}]: merging with openpyxl "
-            f"({n_copy} files; may take a long time on Google Drive)..."
+    try:
+        from consolidate_error_analysis import consolidate_workbooks_from_rows
+
+        consolidate_workbooks_from_rows(
+            rows,
+            out_path,
+            experiment_id_prefixes=experiment_id_prefixes,
+            exclude_exp10=exclude_exp10,
+            progress_every=25,
         )
-        merge(str(tmp_dir), str(out_path), progress_every=25)
+    except Exception as exc:
+        _log(f"Error-analysis [{output_stem}]: consolidate failed: {exc}")
+        raise
     latest = COMPARISON_DIR / f"{output_stem}_latest.xlsx"
     if latest.exists():
         latest.unlink()
