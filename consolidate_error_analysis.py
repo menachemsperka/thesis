@@ -35,7 +35,7 @@ _EXPERIMENTS = PROJECT_ROOT / "experiments"
 if str(_EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(_EXPERIMENTS))
 
-from error_analysis import classify_error  # noqa: E402
+from error_analysis import classify_error, model_display_name  # noqa: E402
 
 SKIP_SHEETS = frozenset({
     "detailed_results",
@@ -54,6 +54,29 @@ SEED_AGG_SHEETS = (
 )
 
 DEFAULT_MAX_ERROR_EXAMPLES = 100_000
+
+# One worksheet per scope; slug is used in Excel tab names (31-char limit).
+CANONICAL_MODEL_SHEETS: tuple[tuple[str, str], ...] = (
+    ("overall", "__overall__"),
+    ("dictabert", "DictaBERT"),
+    ("berel", "BEREL 3.0"),
+    ("hero", "HeRo"),
+    ("alephbertgimmel", "AlephBERT-Gimmel"),
+)
+
+SVM_ROUTES = (
+    "Agree (no routing needed)",
+    "SVM → Regular",
+    "SVM → Cascade",
+)
+
+ROUTING_ERROR_TYPES = (
+    "correct",
+    "type_error",
+    "boundary_error",
+    "false_positive",
+    "false_negative",
+)
 
 ERROR_ROW_ORDER = (
     ("false_positive", "FP (False Positive)"),
@@ -80,6 +103,18 @@ def _split_bio(label: str) -> tuple[str, str]:
 def _is_exp10_experiment_id(experiment_id: str) -> bool:
     e = str(experiment_id).strip()
     return e.startswith("exp10_") or e == "exp10"
+
+
+def _canonical_model_display(meta: dict[str, Any]) -> str:
+    """Map run metadata to one of the canonical model display names when possible."""
+    raw = str(meta.get("model_name") or meta.get("model_id") or "").strip()
+    low = raw.lower()
+    for slug, display in CANONICAL_MODEL_SHEETS:
+        if slug == "overall":
+            continue
+        if slug in low or display.lower() in low:
+            return display
+    return model_display_name(raw) if raw else "unknown"
 
 
 def crf_family(experiment_id: str) -> str:
@@ -224,7 +259,7 @@ def _accumulate_detailed(
         return
 
     family = crf_family(str(meta.get("experiment_id", "")))
-    model = str(meta.get("model_name") or meta.get("model_id") or "unknown")
+    model = _canonical_model_display(meta)
     split_strategy, aug = _parse_split_and_aug(
         str(meta.get("condition_group_short") or meta.get("condition_short") or ""),
         str(meta.get("data_source") or ""),
@@ -234,7 +269,7 @@ def _accumulate_detailed(
 
     for model_scope in ("__overall__", model):
         acc.tokens_by_slice[(family, model_scope, "__all__")] += n_tokens
-        acc.split_tokens[(family, split_strategy, aug, "__all__")] += n_tokens
+        acc.split_tokens[(family, model_scope, split_strategy, aug, "__all__")] += n_tokens
 
     exp_id = str(meta.get("experiment_id", ""))
     is_svm = "svm" in exp_id.lower()
@@ -264,9 +299,12 @@ def _accumulate_detailed(
                     conf = f"{te or 'O'} → {pe or 'O'}"
                     acc.type_confusion[(key, conf)] += 1
 
-        for true_l, pred_l in zip(true_labels, preds):
-            err = classify_error(true_l, pred_l)
-            acc.split_method_errors[(family, split_strategy, aug, method_name, err)] += 1
+        for model_scope in ("__overall__", model):
+            for true_l, pred_l in zip(true_labels, preds):
+                err = classify_error(true_l, pred_l)
+                acc.split_method_errors[
+                    (family, model_scope, split_strategy, aug, method_name, err)
+                ] += 1
 
     if is_svm and "fused_pred_label" in df.columns and "selected_source" in df.columns:
         disagree = df["disagree"].astype(bool) if "disagree" in df.columns else pd.Series(False, index=df.index)
@@ -398,20 +436,32 @@ def _svm_router_table(acc: _DetailAccumulator, family: str, model_scope: str, ti
     return df
 
 
-def _split_strategy_table(acc: _DetailAccumulator, family: str) -> pd.DataFrame:
+def _split_strategy_table(
+    acc: _DetailAccumulator,
+    family: str,
+    model_scope: str,
+) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     triples = sorted({
-        (k[1], k[2], k[3])
+        (k[2], k[3], k[4])
         for k in acc.split_method_errors
-        if k[0] == family
+        if k[0] == family and k[1] == model_scope
     })
     for split_strategy, aug, method in triples:
-        fp = acc.split_method_errors.get((family, split_strategy, aug, method, "false_positive"), 0)
-        fn = acc.split_method_errors.get((family, split_strategy, aug, method, "false_negative"), 0)
-        te = acc.split_method_errors.get((family, split_strategy, aug, method, "type_error"), 0)
-        be = acc.split_method_errors.get((family, split_strategy, aug, method, "boundary_error"), 0)
+        fp = acc.split_method_errors.get(
+            (family, model_scope, split_strategy, aug, method, "false_positive"), 0
+        )
+        fn = acc.split_method_errors.get(
+            (family, model_scope, split_strategy, aug, method, "false_negative"), 0
+        )
+        te = acc.split_method_errors.get(
+            (family, model_scope, split_strategy, aug, method, "type_error"), 0
+        )
+        be = acc.split_method_errors.get(
+            (family, model_scope, split_strategy, aug, method, "boundary_error"), 0
+        )
         total = fp + fn + te + be
-        tokens = acc.split_tokens.get((family, split_strategy, aug, "__all__"), 0)
+        tokens = acc.split_tokens.get((family, model_scope, split_strategy, aug, "__all__"), 0)
         err_rate = (100.0 * total / tokens) if tokens else None
         rows.append({
             "Split Strategy": split_strategy,
@@ -427,69 +477,123 @@ def _split_strategy_table(acc: _DetailAccumulator, family: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _write_section_blocks(writer: pd.ExcelWriter, sheet_name: str, sections: list[tuple[str, pd.DataFrame]]) -> None:
-    """Write multiple titled sections into one sheet (vertical stack)."""
-    start_row = 0
-    placeholder = pd.DataFrame({"": ["Consolidated error-analysis summaries"]})
-    placeholder.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row)
-    start_row += len(placeholder) + 2
-    for title, frame in sections:
-        if frame is None or frame.empty:
-            continue
-        hdr = pd.DataFrame({title: [""]})
-        hdr.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row, header=False)
-        start_row += 2
-        frame.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row)
-        start_row += len(frame) + 3
+def _empty_section_note(section: str) -> pd.DataFrame:
+    return pd.DataFrame([{"note": f"No data for: {section}"}])
 
 
-def _build_summary_sections(acc: _DetailAccumulator, family: str) -> list[tuple[str, pd.DataFrame]]:
-    sections: list[tuple[str, pd.DataFrame]] = []
-    sections.append((
-        f"Error Analysis: Regular vs Cascade NER ({family}) — OVERALL",
-        _error_type_table(acc, family, "__overall__"),
-    ))
-    tc_all = _type_confusion_table(acc, family, "__overall__")
-    if not tc_all.empty:
-        sections.append((f"Type Error by Entity ({family}) — OVERALL", tc_all))
+def _error_types_by_routing_table(
+    acc: _DetailAccumulator,
+    family: str,
+    model_scope: str,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    route_cols = {
+        "Agree (no routing needed)": "Agree",
+        "SVM → Regular": "SVM→Regular",
+        "SVM → Cascade": "SVM→Cascade",
+    }
+    for err in ROUTING_ERROR_TYPES:
+        row: dict[str, Any] = {"Error Type": err}
+        row_total = 0
+        for route, col in route_cols.items():
+            n = acc.svm_route_errors.get((family, model_scope, route, err), 0)
+            row[col] = n
+            row_total += n
+        row["Total"] = row_total
+        rows.append(row)
+    if not any(r.get("Total", 0) for r in rows):
+        return pd.DataFrame()
+    total_row: dict[str, Any] = {"Error Type": "TOTAL"}
+    for col in ("Agree", "SVM→Regular", "SVM→Cascade", "Total"):
+        total_row[col] = sum(int(r.get(col, 0) or 0) for r in rows)
+    rows.append(total_row)
+    return pd.DataFrame(rows)
 
-    model_names: set[str] = set()
-    for key in acc.error_by_method:
-        fam, scope, _meth = key[0]
-        if fam == family and scope != "__overall__":
-            model_names.add(scope)
-    for model in sorted(model_names):
-        sections.append((
-            f"Error Analysis ({family}) — {model}",
-            _error_type_table(acc, family, model),
-        ))
-        tc = _type_confusion_table(acc, family, model)
-        if not tc.empty:
-            sections.append((f"Type Error by Entity ({family}) — {model}", tc))
 
-    svm_overall = _svm_router_table(acc, family, "__overall__", "SVM Router Results")
-    if not svm_overall.empty:
-        sections.append(("SVM Router Results", svm_overall.drop(columns=[], errors="ignore")))
-        dis = _svm_router_table(acc, family, "__overall__", "SVM Routing on Disagreements")
-        # Filter to disagreement routes only for second table
-        if not dis.empty:
-            dis = dis[dis["Routing Decision"].astype(str).str.contains("SVM →", na=False)]
-            if not dis.empty:
-                sections.append(("SVM Routing on Disagreements", dis))
-
-    split_df = _split_strategy_table(acc, family)
-    if not split_df.empty:
-        sections.append((f"ERROR ANALYSIS BY SPLIT STRATEGY AND METHOD ({family})", split_df))
-
-    thesis = pd.DataFrame({
+def _thesis_statements_frame() -> pd.DataFrame:
+    return pd.DataFrame({
         "Thesis Statements": [
             "• Add your thesis observations here...",
             "• Key findings from the error analysis...",
             "• Conclusions about model performance...",
         ]
     })
-    sections.append(("Thesis Statements", thesis))
+
+
+def _build_scope_summary_sections(
+    acc: _DetailAccumulator,
+    family: str,
+    model_scope: str,
+    scope_label: str,
+) -> list[tuple[str, pd.DataFrame]]:
+    """Fixed section order — same blocks on every model tab and on overall."""
+    sections: list[tuple[str, pd.DataFrame]] = []
+
+    err_tbl = _error_type_table(acc, family, model_scope)
+    sections.append((
+        f"Error Analysis: Regular vs Cascade NER ({family} — {scope_label})",
+        err_tbl if not err_tbl.empty else _empty_section_note("error analysis"),
+    ))
+
+    tc = _type_confusion_table(acc, family, model_scope)
+    sections.append((
+        f"Type Error by Entity ({scope_label})",
+        tc if not tc.empty else _empty_section_note("type error by entity"),
+    ))
+
+    svm = _svm_router_table(acc, family, model_scope, "SVM Router Results")
+    sections.append((
+        "SVM Router Results",
+        svm if not svm.empty else _empty_section_note("SVM router results"),
+    ))
+
+    dis = _svm_router_table(acc, family, model_scope, "SVM Routing on Disagreements")
+    if not dis.empty:
+        dis = dis[dis["Routing Decision"].astype(str).str.contains("SVM →", na=False)]
+    sections.append((
+        "SVM Routing on Disagreements",
+        dis if not dis.empty else _empty_section_note("SVM routing on disagreements"),
+    ))
+
+    route_err = _error_types_by_routing_table(acc, family, model_scope)
+    sections.append((
+        "Error Types by Routing Decision",
+        route_err if not route_err.empty else _empty_section_note("error types by routing"),
+    ))
+
+    split_df = _split_strategy_table(acc, family, model_scope)
+    sections.append((
+        f"ERROR ANALYSIS BY SPLIT STRATEGY AND METHOD ({scope_label})",
+        split_df if not split_df.empty else _empty_section_note("split strategy breakdown"),
+    ))
+
+    sections.append(("Thesis Statements", _thesis_statements_frame()))
     return sections
+
+
+def _write_section_blocks(writer: pd.ExcelWriter, sheet_name: str, sections: list[tuple[str, pd.DataFrame]]) -> None:
+    """Write multiple titled sections into one sheet (vertical stack)."""
+    start_row = 0
+    for title, frame in sections:
+        hdr = pd.DataFrame({title: [""]})
+        hdr.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row, header=False)
+        start_row += 2
+        out = frame if frame is not None and not frame.empty else _empty_section_note(title)
+        out.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row)
+        start_row += len(out) + 3
+
+
+def _write_family_summary_tabs(writer: pd.ExcelWriter, acc: _DetailAccumulator, family: str) -> None:
+    """One tab per model (+ overall), identical section layout on each tab."""
+    prefix = f"summary_{family.lower().replace('-', '_')}"
+    for slug, scope in CANONICAL_MODEL_SHEETS:
+        if slug == "overall":
+            scope_label = "OVERALL"
+        else:
+            scope_label = scope
+        sheet_name = f"{prefix}_{slug}"[:31]
+        sections = _build_scope_summary_sections(acc, family, scope, scope_label)
+        _write_section_blocks(writer, sheet_name, sections)
 
 
 def _row_matches_filters(
@@ -605,6 +709,11 @@ def consolidate_workbooks_from_rows(
         {"section": "ABOUT", "item": "skipped_sheets", "description": ", ".join(sorted(SKIP_SHEETS))},
         {"section": "ABOUT", "item": "workbooks_processed", "description": str(n_files)},
         {"section": "ABOUT", "item": "max_error_examples", "description": str(max_error_examples)},
+        {"section": "ABOUT", "item": "summary_tabs",
+         "description": (
+             "Per family (summary_non_crf_* / summary_crf_*): overall, dictabert, berel, hero, "
+             "alephbertgimmel — identical section layout on each tab"
+         )},
     ])
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -659,11 +768,7 @@ def consolidate_workbooks_from_rows(
             pd.DataFrame(reservoir.items).to_excel(writer, sheet_name="error_examples", index=False)
 
         for family in ("NON-CRF", "CRF"):
-            sections = _build_summary_sections(detail_acc, family)
-            if not sections:
-                continue
-            sheet = f"summary_{family.lower().replace('-', '_')}"
-            _write_section_blocks(writer, sheet[:31], sections)
+            _write_family_summary_tabs(writer, detail_acc, family)
 
     print(f"[done] consolidated -> {output_path}", flush=True)
     return stats
