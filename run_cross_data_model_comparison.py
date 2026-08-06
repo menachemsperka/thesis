@@ -39,6 +39,8 @@ Outputs
 * ``outputs/cross_comparison/cross_comparison_<timestamp>.xlsx``
 * ``outputs/cross_comparison/cross_comparison_latest.xlsx``
 * ``outputs/cross_comparison/consolidated_error_analysis_exp10_<timestamp>.xlsx`` (when Exp10 is selected)
+* ``outputs/cross_comparison/consolidated_error_analysis_non_exp10_<timestamp>.xlsx`` (Exp01/04/05/06 ready; split mode)
+* ``outputs/cross_comparison/consolidated_error_analysis_all_<timestamp>.xlsx`` (optional single-file mode; high RAM)
 * ``outputs/cross_comparison/cross_comparison_<timestamp>.json``
 * ``outputs/cross_comparison/cross_comparison_latest.json``
 * ``outputs/cross_comparison/cross_comparison_base_ready_index.json``
@@ -1045,11 +1047,17 @@ def _ensure_base_artifacts_crf(
     return entry, False
 
 
+def _is_exp10_experiment_id(exp_id: str) -> bool:
+    e = str(exp_id).strip()
+    return e.startswith("exp10_") or e == "exp10"
+
+
 def _consolidate_error_analysis_workbooks(
     rows: list[dict[str, Any]],
     ts: str,
     *,
     experiment_id_prefixes: tuple[str, ...] | None = None,
+    exclude_exp10: bool = False,
     output_stem: str = "consolidated_error_analysis",
 ) -> Path | None:
     """Merge error-analysis sheets from per-run metrics workbooks into one file."""
@@ -1071,6 +1079,9 @@ def _consolidate_error_analysis_workbooks(
             skipped_error_status += 1
             continue
         exp_id = str(row.get("experiment_id", "")).strip()
+        if exclude_exp10 and _is_exp10_experiment_id(exp_id):
+            skipped_exp_filter += 1
+            continue
         if experiment_id_prefixes and not any(exp_id == p for p in experiment_id_prefixes):
             skipped_exp_filter += 1
             continue
@@ -1138,6 +1149,17 @@ def _consolidate_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Pa
         ts,
         experiment_id_prefixes=exp10_prefixes,
         output_stem="consolidated_error_analysis_exp10",
+    )
+
+
+def _consolidate_non_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Path | None:
+    """Merge error-analysis workbooks for Exp01/04/05/06 ready runs (excludes all Exp10 ids)."""
+    return _consolidate_error_analysis_workbooks(
+        rows,
+        ts,
+        experiment_id_prefixes=None,
+        exclude_exp10=True,
+        output_stem="consolidated_error_analysis_non_exp10",
     )
 
 
@@ -1985,6 +2007,7 @@ def run_comparison(
     base_mode: str = "auto",
     rerun_experiments: list[str] | None = None,
     skip_consolidated_error_analysis: bool = False,
+    consolidated_error_analysis_scope: str = "both",
 ) -> dict:
     """Run all (model × data-condition × experiment) combinations.
 
@@ -2854,6 +2877,7 @@ def run_comparison(
     ts = _now_ts()
     exp10_error_analysis_path = None
     all_error_analysis_path = None
+    non_exp10_error_analysis_path = None
 
     # ── Excel ─────────────────────────────────────────────────────────
     _log("Export: writing cross_comparison Excel workbook...")
@@ -2971,6 +2995,19 @@ def run_comparison(
     _atomic_write_json(latest_json, payload_out)
     _log(f"Export: JSON written -> {json_path}")
 
+    scope_raw = (
+        consolidated_error_analysis_scope
+        or os.environ.get("THESIS_CONSOLIDATED_ERROR_ANALYSIS_SCOPE")
+        or "both"
+    ).strip().lower()
+    if scope_raw not in {"both", "split", "exp10", "rest", "all"}:
+        raise ValueError(
+            "consolidated_error_analysis_scope must be one of: "
+            "split, both, exp10, rest, all"
+        )
+    if scope_raw == "both":
+        scope_raw = "split"
+
     skip_err = skip_consolidated_error_analysis or (
         (os.environ.get("THESIS_SKIP_ERROR_ANALYSIS_CONSOLIDATION") or "").strip().lower()
         in {"1", "true", "yes", "on"}
@@ -2981,23 +3018,34 @@ def run_comparison(
             "(--skip-consolidated-error-analysis or THESIS_SKIP_ERROR_ANALYSIS_CONSOLIDATION=1)."
         )
     else:
-        _log("Export: starting consolidated error-analysis workbooks (optional; often slow)...")
-        if any(str(e).startswith("10") for e in experiment_ids):
+        _log(
+            f"Export: starting consolidated error-analysis (scope={scope_raw}; often slow on Drive)..."
+        )
+        if scope_raw in {"split", "exp10"} and any(str(e).startswith("10") for e in experiment_ids):
             try:
                 exp10_error_analysis_path = _consolidate_exp10_error_analysis(rows, ts)
             except Exception as exc:
                 _log(f"Exp10 consolidated error-analysis export skipped: {exc}")
                 traceback.print_exc()
-        try:
-            all_error_analysis_path = _consolidate_error_analysis_workbooks(
-                rows,
-                ts,
-                experiment_id_prefixes=None,
-                output_stem="consolidated_error_analysis_all",
-            )
-        except Exception as exc:
-            _log(f"Full consolidated error-analysis export skipped: {exc}")
-            traceback.print_exc()
+        elif scope_raw == "exp10":
+            _log("Export: exp10 error-analysis skipped (no Exp10 experiments in --experiments).")
+        if scope_raw in {"split", "rest"}:
+            try:
+                non_exp10_error_analysis_path = _consolidate_non_exp10_error_analysis(rows, ts)
+            except Exception as exc:
+                _log(f"Non-Exp10 consolidated error-analysis export skipped: {exc}")
+                traceback.print_exc()
+        if scope_raw == "all":
+            try:
+                all_error_analysis_path = _consolidate_error_analysis_workbooks(
+                    rows,
+                    ts,
+                    experiment_id_prefixes=None,
+                    output_stem="consolidated_error_analysis_all",
+                )
+            except Exception as exc:
+                _log(f"Full consolidated error-analysis export skipped: {exc}")
+                traceback.print_exc()
 
     if not rebuild_from_checkpoint:
         _save_progress_checkpoint(
@@ -3067,6 +3115,8 @@ def run_comparison(
     print(f"  JSON:  {json_path}")
     if exp10_error_analysis_path and exp10_error_analysis_path.exists():
         print(f"  Exp10 error analysis: {exp10_error_analysis_path}")
+    if non_exp10_error_analysis_path and non_exp10_error_analysis_path.exists():
+        print(f"  Non-Exp10 error analysis: {non_exp10_error_analysis_path}")
     if all_error_analysis_path and all_error_analysis_path.exists():
         print(f"  All error analysis: {all_error_analysis_path}")
 
@@ -3204,6 +3254,17 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--consolidated-error-analysis",
+        choices=["split", "both", "exp10", "rest", "all"],
+        default="split",
+        help=(
+            "Consolidated error-analysis workbooks: "
+            "split/both = exp10 file + non-Exp10 file (recommended; lower RAM than 'all'); "
+            "exp10 or rest = one file only; "
+            "all = single workbook for every run (highest RAM)."
+        ),
+    )
+    parser.add_argument(
         "--list-base-cache",
         action="store_true",
         help=(
@@ -3252,4 +3313,5 @@ if __name__ == "__main__":
         base_mode=args.base_mode,
         rerun_experiments=rerun_experiments or None,
         skip_consolidated_error_analysis=args.skip_consolidated_error_analysis,
+        consolidated_error_analysis_scope=args.consolidated_error_analysis,
     )
