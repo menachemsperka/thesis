@@ -12,9 +12,16 @@ Compares **Exp10** methods on public corpora using the **same split logic as the
 - `small_300` — fixed pool of **300** sentences sampled from official train (`pool_seed=42`); each seed applies both split variants on that pool (≈210 train / 90 eval).
 - `full` — pool = **all official train** sentences; same 70/30 + variants per seed.
 
-**Experiments:** `10_regular`, `10_cascade`, `10_svm_ready` (same as `run_cross_data_model_comparison.py` Exp10 set).
+**Train modes (exp08 augmentation)**
 
-## Entry point
+- `baseline` — train on the 70% split only.
+- `augmented` — same eval; train on baseline + **LLM mask-filled** sentences (`experiment_08_llm_augmentation`, multiplier `THESIS_EXP08_MULTIPLIER`, default 3). Fill-mask model = benchmark encoder unless `THESIS_AUGMENTATION_MODEL_NAME` is set.
+
+Default run uses **both** (`--train-modes baseline,augmented`). Prepare baseline with `--prepare-only --skip-augmentation`, then `--prepare-augmentation-only` per benchmark (see `COLAB.md` §1d).
+
+| `--skip-augmentation` | Baseline training/eval only |
+| `--prepare-augmentation-only` | Build `*_augmented_train.json` only |
+
 
 From repo root:
 

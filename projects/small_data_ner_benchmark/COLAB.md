@@ -117,17 +117,14 @@ os.environ["THESIS_EXP04_EPOCHS"] = "3"
 
 ## 1. Prepare-only (one cell per benchmark)
 
-**small_300 + full**, **20 seeds** (42–61 by default). CPU is fine. Run **0 → setup**, then **1a → 1b → 1c** in order (or retry only the cell that failed).
-
-For **`small_300`**: each seed draws from a **300-sentence pool**, then **70% train / 30% eval** (same exp07 split functions as the thesis). Stats are in the Excel sheet **`dataset_details`**.
-
-If a benchmark already has `data/<benchmark>/split_meta.json` on Drive, that cell is **skipped** automatically.
+**small_300 + full**, **20 seeds** (42–61). Steps **1a–1c** download corpora + baseline splits (CPU). Step **1d** runs **exp08 LLM mask-fill** on each train split (GPU strongly recommended; slow).
 
 ### 1a. CoNLL-2003 + bert-base-uncased
 
 ```python
 !python $RUNNER \
   --prepare-only \
+  --skip-augmentation \
   --benchmarks conll2003_bert \
   --regimes small_300,full \
   --num-seeds 20 \
@@ -141,6 +138,7 @@ Set `THESIS_BENCHMARK_NEMO_DATASET` above if needed, then:
 ```python
 !python $RUNNER \
   --prepare-only \
+  --skip-augmentation \
   --benchmarks nemo_dictabert \
   --regimes small_300,full \
   --num-seeds 20 \
@@ -152,29 +150,50 @@ Set `THESIS_BENCHMARK_NEMO_DATASET` above if needed, then:
 ```python
 !python $RUNNER \
   --prepare-only \
+  --skip-augmentation \
   --benchmarks bc5cdr_pubmedbert \
   --regimes small_300,full \
   --num-seeds 20 \
   --cache-dir $CACHE
 ```
 
-Check all three are ready (each folder should contain `split_meta.json`):
+Check baseline splits:
 
 ```python
 !ls -la projects/small_data_ner_benchmark/data/*/split_meta.json
+```
+
+### 1d. LLM augmentation (exp08, per benchmark)
+
+Uses each benchmark’s encoder for fill-mask (`bert-base-uncased`, DictaBERT, PubMedBERT). Eval splits are **unchanged**; only train JSON is extended. Optional: `os.environ["THESIS_EXP08_MULTIPLIER"] = "3"`.
+
+```python
+!python $RUNNER \
+  --prepare-augmentation-only \
+  --benchmarks conll2003_bert \
+  --regimes small_300,full \
+  --num-seeds 20 \
+  --cache-dir $CACHE
+```
+
+Repeat for `nemo_dictabert` and `bc5cdr_pubmedbert`. Augmented files: `data/<benchmark>/splits/<regime>/*_augmented_train.json`.
+
+```python
+!ls projects/small_data_ner_benchmark/data/conll2003_bert/splits/small_300/*augmented*
 ```
 
 ---
 
 ## 2. Run (train or resume)
 
-Same scope as prepare. Always use **`--resume`**: first execution trains; re-run this cell after a disconnect to continue.
+Default **`--train-modes baseline,augmented`**: trains each split twice (original train vs exp08-augmented train, same eval). Baseline-only: add **`--skip-augmentation`**. Requires **1d** completed if using augmented mode.
 
 ```python
 !python $RUNNER \
   --benchmarks conll2003_bert,nemo_dictabert,bc5cdr_pubmedbert \
   --regimes small_300,full \
   --num-seeds 20 \
+  --train-modes baseline,augmented \
   --experiments 10_regular,10_cascade,10_svm_ready \
   --base-mode auto \
   --cache-dir $CACHE \
@@ -276,7 +295,10 @@ files.download("projects/small_data_ner_benchmark/outputs/cross_comparison/cross
 
 | Flag | Meaning |
 |------|---------|
-| `--prepare-only` | Datasets + splits only |
+| `--prepare-only` | Baseline corpora + splits (use `--skip-augmentation` for 1a–1c only) |
+| `--prepare-augmentation-only` | Exp08 LLM mask-fill on existing train splits (§1d) |
+| `--train-modes` | `baseline,augmented` (default) or `baseline` with `--skip-augmentation` |
+| `--force-augmentation` | Rebuild `*_augmented_train.json` files |
 | `--benchmarks` | `conll2003_bert`, `nemo_dictabert`, `bc5cdr_pubmedbert` |
 | `--regimes` | Use `small_300,full` |
 | `--num-seeds` | `20` → seeds 42–61 (default `--seed-start` 42) |

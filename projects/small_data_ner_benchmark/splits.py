@@ -215,7 +215,11 @@ def build_conditions(
     regimes: list[str] | None = None,
     variant_filter: list[str] | None = None,
     seed_filter: list[int] | None = None,
+    train_modes: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    from configs import TRAIN_MODE_AUGMENTED, TRAIN_MODE_BASELINE
+
+    use_modes = train_modes or [TRAIN_MODE_BASELINE]
     meta = load_split_meta(data_root)
     corpus_csv = Path(meta["corpus_csv"])
     use_regimes = regimes or list(meta.get("regimes", {}).keys())
@@ -240,25 +244,50 @@ def build_conditions(
                 train_path = data_root / "splits" / str(train_rel).replace("\\", "/")
                 eval_path = data_root / "splits" / str(eval_rel).replace("\\", "/")
                 label = vm.get("label", variant)
-                cond_key = f"{cfg_key}__{regime}__{variant}__seed{seed}"
-                conditions.append(
-                    {
-                        "source": regime,
-                        "benchmark_key": cfg_key,
-                        "benchmark_label": cfg_display,
-                        "corpus_csv": corpus_csv,
-                        "key": cond_key,
-                        "base_condition_key": f"{cfg_key}__{regime}__{variant}",
-                        "base_condition_short": f"{regime} / {label}",
-                        "variant": variant,
-                        "regime": regime,
-                        "label": f"[{cfg_display}] [{regime}] {label} [seed {seed}]",
-                        "short_label": f"{regime} / {label} [s{seed}]",
-                        "description": str(vm.get("description", label)),
-                        "train_path": train_path,
-                        "eval_path": eval_path,
-                        "seed": seed,
-                        "is_baseline": bool(vm.get("is_baseline", variant == BEFORE_VARIANT)),
-                    }
-                )
+
+                mode_paths: list[tuple[str, Path, str]] = []
+                if TRAIN_MODE_BASELINE in use_modes:
+                    mode_paths.append((TRAIN_MODE_BASELINE, train_path, "Baseline (no augmentation)"))
+                if TRAIN_MODE_AUGMENTED in use_modes:
+                    aug_rel = files.get("augmented_train_file")
+                    if aug_rel:
+                        aug_path = data_root / "splits" / str(aug_rel).replace("\\", "/")
+                    else:
+                        from augmentation import _augmented_train_rel
+
+                        aug_rel = _augmented_train_rel(regime, variant, seed)
+                        aug_path = data_root / "splits" / str(aug_rel).replace("\\", "/")
+                    mode_paths.append(
+                        (TRAIN_MODE_AUGMENTED, aug_path, "LLM mask-fill augmented (exp08)")
+                    )
+
+                for train_mode, mode_train_path, mode_desc in mode_paths:
+                    if not mode_train_path.is_file():
+                        continue
+                    suffix = "" if train_mode == TRAIN_MODE_BASELINE else "__aug"
+                    cond_key = f"{cfg_key}__{regime}__{variant}__seed{seed}{suffix}"
+                    short = f"{regime} / {label} [s{seed}]"
+                    if train_mode == TRAIN_MODE_AUGMENTED:
+                        short += " +aug"
+                    conditions.append(
+                        {
+                            "source": regime,
+                            "benchmark_key": cfg_key,
+                            "benchmark_label": cfg_display,
+                            "corpus_csv": corpus_csv,
+                            "key": cond_key,
+                            "base_condition_key": f"{cfg_key}__{regime}__{variant}__{train_mode}",
+                            "base_condition_short": f"{regime} / {label} ({train_mode})",
+                            "variant": variant,
+                            "regime": regime,
+                            "train_mode": train_mode,
+                            "label": f"[{cfg_display}] [{regime}] {label} [{train_mode}] [seed {seed}]",
+                            "short_label": short,
+                            "description": f"{vm.get('description', label)} — {mode_desc}",
+                            "train_path": mode_train_path,
+                            "eval_path": eval_path,
+                            "seed": seed,
+                            "is_baseline": bool(vm.get("is_baseline", variant == BEFORE_VARIANT)),
+                        }
+                    )
     return conditions

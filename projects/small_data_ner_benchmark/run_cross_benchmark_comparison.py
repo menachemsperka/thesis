@@ -49,15 +49,20 @@ from configs import (  # noqa: E402
     DEFAULT_BASE_SEED,
     DEFAULT_NUM_SEEDS,
     DEFAULT_SEED_START,
+    DEFAULT_TRAIN_MODES,
     EXPERIMENT_IDS,
     REGIMES,
     SPLIT_VARIANT_RANDOM,
+    TRAIN_MODE_AUGMENTED,
+    TRAIN_MODE_BASELINE,
+    TRAIN_MODES,
     BenchmarkConfig,
 )
 if str(PROJECT_ROOT / "experiments") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "experiments"))
 
 from exp07_split_artifacts import THESIS_LABELS  # noqa: E402
+from augmentation import augmentation_covers_meta, prepare_augmented_train_splits  # noqa: E402
 from splits import build_conditions, load_split_meta, prepare_all_splits  # noqa: E402
 from split_stats import build_dataset_details_df  # noqa: E402
 
@@ -136,9 +141,12 @@ def _save_checkpoint(
 def _build_deltas_paper_vs_random(results_df: pd.DataFrame) -> pd.DataFrame:
     if results_df.empty:
         return pd.DataFrame()
+    if "train_mode" not in results_df.columns:
+        results_df = results_df.copy()
+        results_df["train_mode"] = TRAIN_MODE_BASELINE
     rows: list[dict[str, Any]] = []
-    for (bench, regime, exp_id, seed), grp in results_df.groupby(
-        ["benchmark_key", "regime", "experiment_id", "seed"], dropna=False
+    for (bench, regime, exp_id, seed, train_mode), grp in results_df.groupby(
+        ["benchmark_key", "regime", "experiment_id", "seed", "train_mode"], dropna=False
     ):
         base = grp[grp["variant"] == SPLIT_VARIANT_RANDOM]
         paper = grp[grp["variant"] == "after_multilabel_iterative_paper"]
@@ -154,6 +162,7 @@ def _build_deltas_paper_vs_random(results_df: pd.DataFrame) -> pd.DataFrame:
                 "regime": regime,
                 "experiment_id": exp_id,
                 "seed": seed,
+                "train_mode": train_mode,
                 "f1_random": float(b_f1),
                 "f1_paper_stratified": float(p_f1),
                 "delta_f1_paper_minus_random": float(p_f1 - b_f1),
@@ -223,7 +232,8 @@ def _export_workbook(
         {"Section": "Design", "Key": "Split variants", "Value": "Simple random; Multilabel stratified (paper-style)"},
         {"Section": "Design", "Key": "Regimes", "Value": "small_300 (300-sentence pool, 70% train / 30% eval); full (official train pool, same ratio)"},
         {"Section": "Design", "Key": "Dataset details sheet", "Value": "Per seed: train/eval sentences, tokens, entity spans, tokens per entity type (JSON columns)"},
-        {"Section": "Design", "Key": "Split ratio", "Value": "70% train / 30% eval (exp07 split functions)"},
+        {"Section": "Design", "Key": "Train modes", "Value": "baseline (original train split); augmented (exp08 LLM mask-fill on train only, same eval)"},
+        {"Section": "Design", "Key": "Augmentation", "Value": "THESIS_EXP08_MULTIPLIER (default 3); fill-mask model = benchmark encoder unless THESIS_AUGMENTATION_MODEL_NAME set"},
         {"Section": "Design", "Key": "Seeds", "Value": f"{seeds[0]}..{seeds[-1]} ({len(seeds)} paired seeds)"},
         {"Section": "Design", "Key": "Experiments", "Value": ", ".join(experiment_ids)},
         {"Section": "Interpretation", "Key": "delta_f1_paper_minus_random",
@@ -260,19 +270,23 @@ def run_comparison(
     experiment_ids: list[str],
     regimes: list[str],
     seeds: list[int],
+    train_modes: list[str],
     cache_dir: Path,
     pool_seed: int,
     base_mode: str,
     resume: bool,
     checkpoint_file: Path | None,
     prepare_only: bool,
+    prepare_augmentation_only: bool,
     dry_run: bool,
+    force_augmentation: bool = False,
 ) -> None:
     os.chdir(PROJECT_ROOT)
     cross.COMPARISON_DIR = COMPARISON_DIR  # noqa: SLF001 — consolidate error analysis output dir
 
     benchmarks = _resolve_benchmarks(benchmark_keys)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    use_aug = TRAIN_MODE_AUGMENTED in train_modes
 
     for cfg in benchmarks:
         data_root = BENCHMARK_ROOT / "data" / cfg.key
@@ -284,33 +298,55 @@ def run_comparison(
             except Exception:
                 meta = None
 
-        if meta and _meta_covers_prepare(meta, seeds, regimes):
-            if prepare_only:
-                _log(f"Prepare skipped (already on Drive): {cfg.display_name} → {data_root}")
-            continue
+        need_baseline_prepare = not prepare_augmentation_only and not (
+            meta and _meta_covers_prepare(meta, seeds, regimes)
+        )
 
-        if meta and not _meta_covers_prepare(meta, seeds, regimes):
-            _log(
-                f"Re-preparing {cfg.display_name}: split_meta has seeds "
-                f"{sorted(int(s) for s in (meta.get('seeds') or []))}, requested {seeds}"
-            )
+        if need_baseline_prepare:
+            if meta and not _meta_covers_prepare(meta, seeds, regimes):
+                _log(
+                    f"Re-preparing {cfg.display_name}: split_meta has seeds "
+                    f"{sorted(int(s) for s in (meta.get('seeds') or []))}, requested {seeds}"
+                )
+            if (not dry_run) or prepare_only or prepare_augmentation_only:
+                _log(f"Preparing baseline splits for {cfg.display_name}...")
+                prepare_all_splits(
+                    benchmark_key=cfg.key,
+                    dataset_key=cfg.dataset_key,
+                    data_root=data_root,
+                    cache_dir=cache_dir,
+                    seeds=seeds,
+                    pool_seed=pool_seed,
+                    regimes=regimes,
+                )
+                meta = load_split_meta(data_root)
+        elif prepare_only and not prepare_augmentation_only and meta:
+            _log(f"Baseline splits skipped (already on Drive): {cfg.display_name} → {data_root}")
 
-        if (not dry_run) or prepare_only:
-            _log(f"Preparing splits for {cfg.display_name}...")
-            prepare_all_splits(
-                benchmark_key=cfg.key,
-                dataset_key=cfg.dataset_key,
-                data_root=data_root,
-                cache_dir=cache_dir,
-                seeds=seeds,
-                pool_seed=pool_seed,
-                regimes=regimes,
-            )
-        if prepare_only:
+        if use_aug and not dry_run:
+            meta = load_split_meta(data_root) if meta_path.exists() else None
+            if meta is None:
+                raise FileNotFoundError(
+                    f"Missing baseline splits for {cfg.key}. Run --prepare-only first."
+                )
+            if force_augmentation or not augmentation_covers_meta(meta, data_root):
+                _log(f"Preparing LLM augmentation (exp08) for {cfg.display_name}...")
+                cross._set_model_env(cfg.model_id)
+                prepare_augmented_train_splits(
+                    data_root=data_root,
+                    ner_model_id=cfg.model_id,
+                    benchmark_display=cfg.display_name,
+                    force=force_augmentation,
+                    log_fn=_log,
+                )
+            elif prepare_only or prepare_augmentation_only:
+                _log(f"Augmentation skipped (already on Drive): {cfg.display_name}")
+
+        if prepare_only or prepare_augmentation_only:
             _log(f"Prepared {data_root}")
             continue
 
-    if prepare_only:
+    if prepare_only or prepare_augmentation_only:
         return
 
     all_conditions: list[dict[str, Any]] = []
@@ -330,12 +366,18 @@ def run_comparison(
                 f"requested {sorted(requested_seeds)}. Re-run --prepare-only with --num-seeds "
                 f"{len(seeds)} (or matching --seeds)."
             )
+        if use_aug and not augmentation_covers_meta(meta, data_root):
+            raise ValueError(
+                f"{cfg.key}: augmented train splits missing. Run --prepare-only (or "
+                f"--prepare-augmentation-only) with --train-modes baseline,augmented."
+            )
         all_conditions.extend(
             build_conditions(
                 cfg_key=cfg.key,
                 cfg_display=cfg.display_name,
                 data_root=data_root,
                 regimes=regimes,
+                train_modes=train_modes,
             )
         )
 
@@ -489,6 +531,7 @@ def run_comparison(
                         "condition_short": cond["short_label"],
                         "condition_description": cond["description"],
                         "seed": cond["seed"],
+                        "train_mode": cond.get("train_mode", TRAIN_MODE_BASELINE),
                         "is_baseline": cond["is_baseline"],
                         "f1": metrics.get("f1"),
                         "precision": metrics.get("precision"),
@@ -574,6 +617,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--resume", action="store_true")
     p.add_argument("--checkpoint-file", type=Path, default=None)
     p.add_argument("--prepare-only", action="store_true")
+    p.add_argument(
+        "--prepare-augmentation-only",
+        action="store_true",
+        help="Only run exp08 LLM augmentation on existing baseline splits (GPU recommended).",
+    )
+    p.add_argument(
+        "--force-augmentation",
+        action="store_true",
+        help="Rebuild all augmented_train JSON files even if they exist.",
+    )
+    p.add_argument(
+        "--train-modes",
+        default=",".join(DEFAULT_TRAIN_MODES),
+        help="Comma-separated: baseline, augmented (default: both).",
+    )
+    p.add_argument(
+        "--skip-augmentation",
+        action="store_true",
+        help="Train/evaluate baseline splits only (same as --train-modes baseline).",
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
         "--error-analysis-scope",
@@ -595,18 +658,29 @@ def main() -> None:
     else:
         seeds = list(range(args.seed_start, args.seed_start + args.num_seeds))
 
+    if args.skip_augmentation:
+        train_modes = [TRAIN_MODE_BASELINE]
+    else:
+        train_modes = [x.strip() for x in args.train_modes.split(",") if x.strip()]
+    bad = [m for m in train_modes if m not in TRAIN_MODES]
+    if bad:
+        raise ValueError(f"Unknown train modes: {bad}. Use: {list(TRAIN_MODES)}")
+
     run_comparison(
         benchmark_keys=benchmark_keys,
         experiment_ids=experiment_ids,
         regimes=regimes,
         seeds=seeds,
+        train_modes=train_modes,
         cache_dir=args.cache_dir,
         pool_seed=args.pool_seed,
         base_mode=args.base_mode,
         resume=args.resume,
         checkpoint_file=args.checkpoint_file,
         prepare_only=args.prepare_only,
+        prepare_augmentation_only=args.prepare_augmentation_only,
         dry_run=args.dry_run,
+        force_augmentation=args.force_augmentation,
     )
 
 
