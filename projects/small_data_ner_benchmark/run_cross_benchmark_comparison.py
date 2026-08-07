@@ -94,6 +94,15 @@ def _set_benchmark_model_env(cfg: BenchmarkConfig) -> None:
     os.environ["THESIS_NER_CSV"] = str(BENCHMARK_ROOT / "data" / cfg.key / "corpus.csv")
 
 
+def _meta_covers_prepare(meta: dict[str, Any], seeds: list[int], regimes: list[str]) -> bool:
+    """True if split_meta already matches the requested seeds and regimes."""
+    prepared = {int(s) for s in (meta.get("seeds") or [])}
+    if prepared != set(seeds):
+        return False
+    meta_regimes = set((meta.get("regimes") or {}).keys())
+    return set(regimes).issubset(meta_regimes)
+
+
 def _run_key(benchmark_key: str, exp_id: str, condition_key: str) -> str:
     return f"{benchmark_key}||exp{exp_id}||{condition_key}"
 
@@ -268,11 +277,24 @@ def run_comparison(
     for cfg in benchmarks:
         data_root = BENCHMARK_ROOT / "data" / cfg.key
         meta_path = data_root / "split_meta.json"
-        if meta_path.exists() and not prepare_only:
+        meta: dict[str, Any] | None = None
+        if meta_path.exists():
+            try:
+                meta = load_split_meta(data_root)
+            except Exception:
+                meta = None
+
+        if meta and _meta_covers_prepare(meta, seeds, regimes):
+            if prepare_only:
+                _log(f"Prepare skipped (already on Drive): {cfg.display_name} → {data_root}")
             continue
-        if meta_path.exists() and prepare_only:
-            _log(f"Prepare skipped (already on Drive): {cfg.display_name} → {data_root}")
-            continue
+
+        if meta and not _meta_covers_prepare(meta, seeds, regimes):
+            _log(
+                f"Re-preparing {cfg.display_name}: split_meta has seeds "
+                f"{sorted(int(s) for s in (meta.get('seeds') or []))}, requested {seeds}"
+            )
+
         if (not dry_run) or prepare_only:
             _log(f"Preparing splits for {cfg.display_name}...")
             prepare_all_splits(

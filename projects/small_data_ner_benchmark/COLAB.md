@@ -8,6 +8,66 @@ General clone/Drive setup: [COLAB_README.md](../../COLAB_README.md).
 
 ---
 
+## 0a. Sync code from GitHub (run if files are missing on Drive)
+
+Your working copy on Drive is often **`/content/drive/MyDrive/thesis_project/thesis`** (GitHub repo `menachemsperka/thesis`).  
+The benchmark needs **`projects/small_data_ner_benchmark/corpus_loaders.py`** — that file is on **`main`** on GitHub; if `ls` says missing, **`git pull` did not update that folder** (wrong directory, not a git repo, or pull failed).
+
+**Security:** never paste a GitHub PAT into a notebook or chat. Use [Colab Secrets](https://colab.research.google.com/) (`userdata.get('GITHUB_TOKEN')`) or `getpass`, and revoke any token that was exposed.
+
+```python
+import os
+from pathlib import Path
+
+REPO = "/content/drive/MyDrive/thesis_project/thesis"  # your Drive clone
+assert Path(REPO).is_dir(), f"Missing folder: {REPO}"
+
+%cd {REPO}
+
+# Must be a git checkout (should print a path under REPO)
+!git rev-parse --show-toplevel
+
+!git fetch origin
+!git status -sb
+!git pull origin main
+
+# Benchmark package (all of these should exist after a successful pull)
+!ls -la projects/small_data_ner_benchmark/corpus_loaders.py
+!ls -la projects/small_data_ner_benchmark/split_stats.py
+!git log -1 --oneline -- projects/small_data_ner_benchmark/corpus_loaders.py
+```
+
+If **`git rev-parse` fails**, Drive is not a git clone — clone fresh next to it or replace the folder:
+
+```python
+# Optional: fresh clone (uses secret GITHUB_TOKEN — add in Colab Secrets, not in code)
+import os
+from google.colab import userdata
+
+PARENT = "/content/drive/MyDrive/thesis_project"
+%cd {PARENT}
+token = userdata.get("GITHUB_TOKEN")  # create secret in Colab
+!git clone https://{token}@github.com/menachemsperka/thesis.git thesis_fresh
+# Then set REPO = f"{PARENT}/thesis_fresh" in section 0
+```
+
+If **`git pull` fails** because of local edits on Drive:
+
+```python
+%cd /content/drive/MyDrive/thesis_project/thesis
+!git stash push -m "colab-drive-stash"
+!git pull origin main
+```
+
+On your **PC** (folder `thesis_github`), after you commit benchmark changes, run **`git push origin main`** so Colab can pull them. Check push status:
+
+```bash
+git status -sb
+git push origin main
+```
+
+---
+
 ## 0. Session setup (run once)
 
 ```python
@@ -18,7 +78,7 @@ drive.mount("/content/drive")
 ```python
 import os
 
-REPO = "/content/drive/MyDrive/thesis_project/thesis_github"  # change if needed
+REPO = "/content/drive/MyDrive/thesis_project/thesis"  # or .../thesis_github if that is your clone
 CACHE = "/content/drive/MyDrive/thesis_project/benchmark_hf_cache"
 RUNNER = "projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py"
 
@@ -163,7 +223,7 @@ Then run the same **`--resume`** command again (first run after delete trains fr
 | Splits + `corpus.csv` | `projects/small_data_ner_benchmark/data/<benchmark>/` (`split_meta.json`, `splits/`, `pool_300.json`, …) | Only if you **delete** that folder or change seeds/regimes/benchmark list |
 | Hugging Face download cache | `$CACHE` (e.g. `benchmark_hf_cache/`) | Only if cache was cleared; training **does not** re-download if cache exists |
 
-On **Run**, the script skips prepare when `data/<benchmark>/split_meta.json` already exists.
+On **Run**, the script skips prepare when `split_meta.json` already lists the **same seeds and regimes** you pass on the CLI. If you increase `--num-seeds` (e.g. 5 → 20), re-run **prepare 1a–1c** (the runner will **re-prepare automatically** on the next full run if you skip prepare-only, but prepare-only cells skip only when seeds match — run one prepare cell or delete `split_meta.json` first).
 
 ### Prepare-only: resume?
 
@@ -230,6 +290,14 @@ Equivalent entry point: `projects/small_data_ner_benchmark/run_benchmark.py`.
 ---
 
 ## Troubleshooting
+
+**`prepared seeds [42…46] do not include all requested [42…61]`**  
+Splits were built with **`--num-seeds 5`**; training uses **20**. Re-run prepare for each benchmark (1a–1c) with `--num-seeds 20`, or run §2 once — it will **re-prepare** benchmarks whose `split_meta.json` seed list does not match. Then **`--resume`** training.
+
+```python
+!python $RUNNER --prepare-only --benchmarks conll2003_bert --regimes small_300,full --num-seeds 20 --cache-dir $CACHE
+# repeat for nemo_dictabert, bc5cdr_pubmedbert
+```
 
 **`ModuleNotFoundError: No module named 'corpus_loaders'`**  
 Sync the full `projects/small_data_ner_benchmark/` folder to Drive (must include `corpus_loaders.py`). Then re-run §0 and your prepare/run cell. Quick check:
