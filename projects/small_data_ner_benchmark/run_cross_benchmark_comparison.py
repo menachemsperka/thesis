@@ -28,8 +28,13 @@ import pandas as pd
 BENCHMARK_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = BENCHMARK_ROOT.parents[1]
 
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# Benchmark-local modules (configs, splits, corpus_loaders) must precede repo root on sys.path.
+for _p in (PROJECT_ROOT, BENCHMARK_ROOT):
+    _s = str(_p)
+    if _s in sys.path:
+        sys.path.remove(_s)
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(BENCHMARK_ROOT))
 
 # Public NER benchmarks (CoNLL, NEMO, BC5CDR) are not Hebrew corpora.
 os.environ.setdefault("THESIS_SKIP_HEBREW_TEXT_VALIDATION", "1")

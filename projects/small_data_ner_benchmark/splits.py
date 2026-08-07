@@ -8,6 +8,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+BENCHMARK_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = BENCHMARK_ROOT.parents[1]
+EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+_benchmark_s = str(BENCHMARK_ROOT)
+if _benchmark_s not in sys.path:
+    sys.path.insert(0, _benchmark_s)
+if str(EXPERIMENTS_DIR) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENTS_DIR))
+
 from configs import (
     REGIME_FULL,
     REGIME_SMALL,
@@ -17,12 +26,6 @@ from configs import (
     SPLIT_VARIANTS,
 )
 from corpus_loaders import load_benchmark_splits, sample_sentence_pool, write_corpus_csv
-
-BENCHMARK_ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = BENCHMARK_ROOT.parents[1]
-EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
-if str(EXPERIMENTS_DIR) not in sys.path:
-    sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 from exp07_split_artifacts import (  # noqa: E402
     BEFORE_VARIANT,

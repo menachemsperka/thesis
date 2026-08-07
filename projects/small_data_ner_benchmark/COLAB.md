@@ -231,6 +231,13 @@ Equivalent entry point: `projects/small_data_ner_benchmark/run_benchmark.py`.
 
 ## Troubleshooting
 
+**`ModuleNotFoundError: No module named 'corpus_loaders'`**  
+Sync the full `projects/small_data_ner_benchmark/` folder to Drive (must include `corpus_loaders.py`). Then re-run §0 and your prepare/run cell. Quick check:
+
+```python
+!ls projects/small_data_ner_benchmark/corpus_loaders.py
+```
+
 **`HebrewCorpusEncodingError` … Sample tokens: `['EU', 'rejects', …]`**  
 The main thesis loader assumes a Hebrew corpus. Benchmark runs must use an updated repo where `core/hebrew_text_io.py` honors `THESIS_SKIP_HEBREW_TEXT_VALIDATION`, and Colab setup sets that variable (see §0). Sync your Drive copy from git, re-run §0, then `--resume`.
 
