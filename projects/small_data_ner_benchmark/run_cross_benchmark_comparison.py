@@ -381,6 +381,14 @@ def run_comparison(
             )
         )
 
+    n_aug_cond = sum(1 for c in all_conditions if c.get("train_mode") == TRAIN_MODE_AUGMENTED)
+    n_base_cond = len(all_conditions) - n_aug_cond
+    if TRAIN_MODE_AUGMENTED in train_modes and n_aug_cond == 0:
+        raise ValueError(
+            "No augmented conditions in the run plan (0 *_augmented_train.json files found). "
+            "Run --prepare-augmentation-only for your benchmarks, then --resume."
+        )
+
     if dry_run:
         if all_conditions:
             n_runs = len(all_conditions) * len(experiment_ids)
@@ -401,6 +409,11 @@ def run_comparison(
         return
 
     total_runs = len(all_conditions) * len(experiment_ids)
+    _log(
+        f"Run plan: {len(all_conditions)} conditions "
+        f"({n_base_cond} baseline, {n_aug_cond} augmented) × {len(experiment_ids)} experiments "
+        f"= {total_runs} runs"
+    )
     checkpoint_path = checkpoint_file or (COMPARISON_DIR / "benchmark_cross_comparison_checkpoint.json")
     rows: list[dict] = []
     completed: set[str] = set()
@@ -434,6 +447,7 @@ def run_comparison(
             cfg_display=cfg.display_name,
             data_root=BENCHMARK_ROOT / "data" / cfg.key,
             regimes=regimes,
+            train_modes=train_modes,
         )
 
         for exp_id in experiment_ids:

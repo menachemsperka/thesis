@@ -2,7 +2,7 @@
 
 Runs **`run_cross_benchmark_comparison.py`**: regular BERT-CRF vs cascaded + consistency vs SVM fusion on CoNLL-2003 / NEMO / BC5CDR, with **random** and **paper-style multilabel stratified** splits.
 
-**Regimes (always both):** `small_300` (300-sentence pool) and `full` (official train pool), 70/30 per split variant and seed.
+**Regimes:** **`small_300` only** (300-sentence pool, 70/30 per seed × 2 split variants). Omit `full` unless you explicitly add `--regimes small_300,full`.
 
 General clone/Drive setup: [COLAB_README.md](../../COLAB_README.md).
 
@@ -126,7 +126,7 @@ os.environ["THESIS_EXP04_EPOCHS"] = "3"
   --prepare-only \
   --skip-augmentation \
   --benchmarks conll2003_bert \
-  --regimes small_300,full \
+  --regimes small_300 \
   --num-seeds 20 \
   --cache-dir $CACHE
 ```
@@ -140,7 +140,7 @@ Set `THESIS_BENCHMARK_NEMO_DATASET` above if needed, then:
   --prepare-only \
   --skip-augmentation \
   --benchmarks nemo_dictabert \
-  --regimes small_300,full \
+  --regimes small_300 \
   --num-seeds 20 \
   --cache-dir $CACHE
 ```
@@ -152,7 +152,7 @@ Set `THESIS_BENCHMARK_NEMO_DATASET` above if needed, then:
   --prepare-only \
   --skip-augmentation \
   --benchmarks bc5cdr_pubmedbert \
-  --regimes small_300,full \
+  --regimes small_300 \
   --num-seeds 20 \
   --cache-dir $CACHE
 ```
@@ -171,7 +171,7 @@ Uses each benchmark’s encoder for fill-mask (`bert-base-uncased`, DictaBERT, P
 !python $RUNNER \
   --prepare-augmentation-only \
   --benchmarks conll2003_bert \
-  --regimes small_300,full \
+  --regimes small_300 \
   --num-seeds 20 \
   --cache-dir $CACHE
 ```
@@ -191,7 +191,7 @@ Default **`--train-modes baseline,augmented`**: trains each split twice (origina
 ```python
 !python $RUNNER \
   --benchmarks conll2003_bert,nemo_dictabert,bc5cdr_pubmedbert \
-  --regimes small_300,full \
+  --regimes small_300 \
   --num-seeds 20 \
   --train-modes baseline,augmented \
   --experiments 10_regular,10_cascade,10_svm_ready \
@@ -209,15 +209,14 @@ Colab expands **`$RUNNER`** and **`$CACHE`** from the setup cell.
 ```python
 !python $RUNNER \
   --benchmarks conll2003_bert,nemo_dictabert,bc5cdr_pubmedbert \
-  --regimes small_300,full \
+  --regimes small_300 \
   --num-seeds 20 \
+  --train-modes baseline,augmented \
   --experiments 10_regular,10_cascade,10_svm_ready \
   --base-mode auto \
   --cache-dir $CACHE \
   --resume
-```
-
-**Start training over** (keep splits on Drive; drop progress only):
+``` (keep splits on Drive; drop progress only):
 
 ```python
 !rm -f projects/small_data_ner_benchmark/outputs/cross_comparison/benchmark_cross_comparison_checkpoint.json
@@ -235,7 +234,7 @@ Then run the same **`--resume`** command again (first run after delete trains fr
 
 ### Do you need `--prepare-only` again?
 
-**No**, if everything below is still on Drive and you use the **same** benchmarks, `--regimes small_300,full`, **`--num-seeds 20`**, and `--pool-seed` (default 42):
+**No**, if everything below is still on Drive and you use the **same** benchmarks, **`--regimes small_300`**, **`--num-seeds 20`**, and `--pool-seed` (default 42):
 
 | What | Where (on Drive, under repo) | Re-run prepare? |
 |------|------------------------------|-----------------|
@@ -300,7 +299,7 @@ files.download("projects/small_data_ner_benchmark/outputs/cross_comparison/cross
 | `--train-modes` | `baseline,augmented` (default) or `baseline` with `--skip-augmentation` |
 | `--force-augmentation` | Rebuild `*_augmented_train.json` files |
 | `--benchmarks` | `conll2003_bert`, `nemo_dictabert`, `bc5cdr_pubmedbert` |
-| `--regimes` | Use `small_300,full` |
+| `--regimes` | Default in this doc: `small_300` only (add `,full` if needed) |
 | `--num-seeds` | `20` → seeds 42–61 (default `--seed-start` 42) |
 | `--experiments` | Default `10_regular,10_cascade,10_svm_ready` |
 | `--base-mode` | `auto` \| `reuse` \| `retrain` |
@@ -312,6 +311,15 @@ Equivalent entry point: `projects/small_data_ner_benchmark/run_benchmark.py`.
 ---
 
 ## Troubleshooting
+
+**Resume: 360 completed, then only re-exports Excel (no `Run 361/720 … +aug`)**  
+The training loop must use the same **`--train-modes`** as the run plan (fixed in current repo). **Git pull** on Drive, then confirm augmented files exist and the startup line shows augmented conditions:
+
+```python
+!ls projects/small_data_ner_benchmark/data/*/splits/small_300/*augmented* | head
+```
+
+After pull, `--resume` should log e.g. `Run plan: … (120 baseline, 120 augmented) × 3 = 720 runs` and train **`+aug`** rows. If you see `0 augmented`, run **`--prepare-augmentation-only`** first.
 
 **`prepared seeds [42…46] do not include all requested [42…61]`**  
 Splits were built with **`--num-seeds 5`**; training uses **20**. Re-run prepare for each benchmark (1a–1c) with `--num-seeds 20`, or run §2 once — it will **re-prepare** benchmarks whose `split_meta.json` seed list does not match. Then **`--resume`** training.
