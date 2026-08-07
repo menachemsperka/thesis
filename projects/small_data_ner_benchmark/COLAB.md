@@ -57,7 +57,9 @@ os.environ["THESIS_EXP04_EPOCHS"] = "3"
 
 ## 1. Prepare-only (one cell per benchmark)
 
-**small_300 + full**, 5 seeds (42–46). CPU is fine. Run **0 → setup**, then **1a → 1b → 1c** in order (or retry only the cell that failed).
+**small_300 + full**, **20 seeds** (42–61 by default). CPU is fine. Run **0 → setup**, then **1a → 1b → 1c** in order (or retry only the cell that failed).
+
+For **`small_300`**: each seed draws from a **300-sentence pool**, then **70% train / 30% eval** (same exp07 split functions as the thesis). Stats are in the Excel sheet **`dataset_details`**.
 
 If a benchmark already has `data/<benchmark>/split_meta.json` on Drive, that cell is **skipped** automatically.
 
@@ -68,7 +70,7 @@ If a benchmark already has `data/<benchmark>/split_meta.json` on Drive, that cel
   --prepare-only \
   --benchmarks conll2003_bert \
   --regimes small_300,full \
-  --num-seeds 5 \
+  --num-seeds 20 \
   --cache-dir $CACHE
 ```
 
@@ -81,7 +83,7 @@ Set `THESIS_BENCHMARK_NEMO_DATASET` above if needed, then:
   --prepare-only \
   --benchmarks nemo_dictabert \
   --regimes small_300,full \
-  --num-seeds 5 \
+  --num-seeds 20 \
   --cache-dir $CACHE
 ```
 
@@ -92,7 +94,7 @@ Set `THESIS_BENCHMARK_NEMO_DATASET` above if needed, then:
   --prepare-only \
   --benchmarks bc5cdr_pubmedbert \
   --regimes small_300,full \
-  --num-seeds 5 \
+  --num-seeds 20 \
   --cache-dir $CACHE
 ```
 
@@ -112,7 +114,7 @@ Same scope as prepare. Always use **`--resume`**: first execution trains; re-run
 !python $RUNNER \
   --benchmarks conll2003_bert,nemo_dictabert,bc5cdr_pubmedbert \
   --regimes small_300,full \
-  --num-seeds 5 \
+  --num-seeds 20 \
   --experiments 10_regular,10_cascade,10_svm_ready \
   --base-mode auto \
   --cache-dir $CACHE \
@@ -121,9 +123,40 @@ Same scope as prepare. Always use **`--resume`**: first execution trains; re-run
 
 Colab expands **`$RUNNER`** and **`$CACHE`** from the setup cell.
 
+### Restart training
+
+**Continue** after a disconnect (skip runs already in the checkpoint):
+
+```python
+!python $RUNNER \
+  --benchmarks conll2003_bert,nemo_dictabert,bc5cdr_pubmedbert \
+  --regimes small_300,full \
+  --num-seeds 20 \
+  --experiments 10_regular,10_cascade,10_svm_ready \
+  --base-mode auto \
+  --cache-dir $CACHE \
+  --resume
+```
+
+**Start training over** (keep splits on Drive; drop progress only):
+
+```python
+!rm -f projects/small_data_ner_benchmark/outputs/cross_comparison/benchmark_cross_comparison_checkpoint.json
+```
+
+Then run the same **`--resume`** command again (first run after delete trains from run 1).
+
+**Change seed count (e.g. 5 → 20)** — delete prepared splits for each benchmark (or remove `split_meta.json`), re-run prepare **1a–1c** with `--num-seeds 20`, delete the checkpoint, then run §2.
+
+```python
+# Example: wipe one benchmark's splits to re-prepare
+!rm -f projects/small_data_ner_benchmark/data/conll2003_bert/split_meta.json
+!rm -rf projects/small_data_ner_benchmark/data/conll2003_bert/splits
+```
+
 ### Do you need `--prepare-only` again?
 
-**No**, if everything below is still on Drive and you use the **same** benchmarks, `--regimes small_300,full`, `--num-seeds 5`, and `--pool-seed` (default 42):
+**No**, if everything below is still on Drive and you use the **same** benchmarks, `--regimes small_300,full`, **`--num-seeds 20`**, and `--pool-seed` (default 42):
 
 | What | Where (on Drive, under repo) | Re-run prepare? |
 |------|------------------------------|-----------------|
@@ -151,7 +184,7 @@ Rough Colab order-of-magnitude (first time, decent network; **CPU runtime is fin
 | NEMO | ~5–30 min (corpus size / Hub speed varies) |
 | **All 3 benchmarks** | ~**10–45 min** first time; often **&lt;5 min** if `$CACHE` + `data/*/` already on Drive |
 
-Split generation itself (2 variants × 5 seeds × 2 regimes per benchmark) is seconds to a couple of minutes per benchmark on CPU.
+Split generation itself (2 variants × 20 seeds × 2 regimes per benchmark) is seconds to a couple of minutes per benchmark on CPU.
 
 **Re-run `--prepare-only`** when you change `--num-seeds`, `--regimes`, `--benchmarks`, or `--pool-seed`, or after deleting `data/` or the HF cache.
 
@@ -163,7 +196,8 @@ Keep **`%cd`** pointed at the Drive copy of the repo (`REPO` above). A clone onl
 
 | Artifact | Path (under repo root) |
 |----------|-------------------------|
-| Main Excel | `projects/small_data_ner_benchmark/outputs/cross_comparison/cross_comparison_latest.xlsx` |
+| Main Excel | `projects/small_data_ner_benchmark/outputs/cross_comparison/cross_comparison_latest.xlsx` (sheet **`dataset_details`**: per seed train/eval sentences, tokens, entities) |
+| Dataset details JSON | `projects/small_data_ner_benchmark/outputs/cross_comparison/dataset_details_latest.json` |
 | Exp10 error analysis | `projects/small_data_ner_benchmark/outputs/cross_comparison/consolidated_error_analysis_exp10_latest.xlsx` |
 | Checkpoint | `projects/small_data_ner_benchmark/outputs/cross_comparison/benchmark_cross_comparison_checkpoint.json` |
 
@@ -185,7 +219,7 @@ files.download("projects/small_data_ner_benchmark/outputs/cross_comparison/cross
 | `--prepare-only` | Datasets + splits only |
 | `--benchmarks` | `conll2003_bert`, `nemo_dictabert`, `bc5cdr_pubmedbert` |
 | `--regimes` | Use `small_300,full` |
-| `--num-seeds` | `5` → seeds 42–46 (default `--seed-start` 42) |
+| `--num-seeds` | `20` → seeds 42–61 (default `--seed-start` 42) |
 | `--experiments` | Default `10_regular,10_cascade,10_svm_ready` |
 | `--base-mode` | `auto` \| `reuse` \| `retrain` |
 | `--cache-dir` | Hugging Face cache on Drive (`$CACHE`) |

@@ -33,7 +33,7 @@ python projects/small_data_ner_benchmark/run_cross_benchmark_comparison.py --res
 |------|---------|
 | `--benchmarks` | `conll2003_bert,nemo_dictabert,bc5cdr_pubmedbert` (default: all) |
 | `--regimes` | `small_300,full` |
-| `--num-seeds` / `--seeds` | Paired seeds (default 42–46) |
+| `--num-seeds` / `--seeds` | Paired seeds (default **20**, seeds 42–61) |
 | `--base-mode` | `auto` / `reuse` / `retrain` for Exp10 CRF base cache |
 | `--resume` | Train from scratch if no checkpoint; otherwise continue (same flags every run) |
 | `--prepare-only` | Download HF data + write splits only |

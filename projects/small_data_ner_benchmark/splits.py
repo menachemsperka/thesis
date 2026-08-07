@@ -31,6 +31,7 @@ from exp07_split_artifacts import (  # noqa: E402
     VARIANT_DESCRIPTIONS,
 )
 from split_io import save_split  # noqa: E402
+from split_stats import summarize_sentences  # noqa: E402
 
 
 def _load_sentence_json(path: Path) -> list[dict]:
@@ -112,6 +113,12 @@ def generate_regime_splits(
             seed_files[str(seed)] = {
                 "train_file": f"{regime}/{train_name}",
                 "eval_file": f"{regime}/{eval_name}",
+                "pool_n_sentences": len(source_sentences),
+                "split_ratio": split_ratio,
+                "stats": {
+                    "train": summarize_sentences(train_sents),
+                    "eval": summarize_sentences(eval_sents),
+                },
             }
 
         variant_meta.append(

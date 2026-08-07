@@ -53,7 +53,8 @@ if str(PROJECT_ROOT / "experiments") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "experiments"))
 
 from exp07_split_artifacts import THESIS_LABELS  # noqa: E402
-from splits import build_conditions, prepare_all_splits  # noqa: E402
+from splits import build_conditions, load_split_meta, prepare_all_splits  # noqa: E402
+from split_stats import build_dataset_details_df  # noqa: E402
 
 COMPARISON_DIR = BENCHMARK_ROOT / "outputs" / "cross_comparison"
 BASE_CRF_INDEX_PATH = COMPARISON_DIR / "cross_comparison_base_crf_ready_index.json"
@@ -174,6 +175,7 @@ def _export_workbook(
     results_df: pd.DataFrame,
     deltas_df: pd.DataFrame,
     paired_df: pd.DataFrame,
+    dataset_details_df: pd.DataFrame,
     ts: str,
     exp10_error_path: Path | None,
     benchmarks: list[BenchmarkConfig],
@@ -205,7 +207,8 @@ def _export_workbook(
     doc_rows = [
         {"Section": "Design", "Key": "Benchmarks", "Value": ", ".join(b.display_name for b in benchmarks)},
         {"Section": "Design", "Key": "Split variants", "Value": "Simple random; Multilabel stratified (paper-style)"},
-        {"Section": "Design", "Key": "Regimes", "Value": "small_300 (300-sentence pool); full (official train)"},
+        {"Section": "Design", "Key": "Regimes", "Value": "small_300 (300-sentence pool, 70% train / 30% eval); full (official train pool, same ratio)"},
+        {"Section": "Design", "Key": "Dataset details sheet", "Value": "Per seed: train/eval sentences, tokens, entity spans, tokens per entity type (JSON columns)"},
         {"Section": "Design", "Key": "Split ratio", "Value": "70% train / 30% eval (exp07 split functions)"},
         {"Section": "Design", "Key": "Seeds", "Value": f"{seeds[0]}..{seeds[-1]} ({len(seeds)} paired seeds)"},
         {"Section": "Design", "Key": "Experiments", "Value": ", ".join(experiment_ids)},
@@ -215,6 +218,8 @@ def _export_workbook(
     doc_df = pd.DataFrame(doc_rows)
 
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        if not dataset_details_df.empty:
+            dataset_details_df.to_excel(writer, sheet_name="dataset_details", index=False)
         if not pivot_df.empty:
             pivot_df.to_excel(writer, sheet_name="summary_pivot", index=False)
         results_df.to_excel(writer, sheet_name="all_runs", index=False)
@@ -284,15 +289,28 @@ def run_comparison(
     all_conditions: list[dict[str, Any]] = []
     for cfg in benchmarks:
         data_root = BENCHMARK_ROOT / "data" / cfg.key
-        if (data_root / "split_meta.json").exists():
-            all_conditions.extend(
-                build_conditions(
-                    cfg_key=cfg.key,
-                    cfg_display=cfg.display_name,
-                    data_root=data_root,
-                    regimes=regimes,
-                )
+        meta_path = data_root / "split_meta.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(
+                f"Missing {meta_path}. Run --prepare-only for {cfg.key} first."
             )
+        meta = load_split_meta(data_root)
+        prepared_seeds = set(int(s) for s in (meta.get("seeds") or []))
+        requested_seeds = set(seeds)
+        if not requested_seeds.issubset(prepared_seeds):
+            raise ValueError(
+                f"{cfg.key}: prepared seeds {sorted(prepared_seeds)} do not include all "
+                f"requested {sorted(requested_seeds)}. Re-run --prepare-only with --num-seeds "
+                f"{len(seeds)} (or matching --seeds)."
+            )
+        all_conditions.extend(
+            build_conditions(
+                cfg_key=cfg.key,
+                cfg_display=cfg.display_name,
+                data_root=data_root,
+                regimes=regimes,
+            )
+        )
 
     if dry_run:
         if all_conditions:
@@ -472,6 +490,11 @@ def run_comparison(
     paired_df = _paired_summary(deltas_df)
     ts = _now_ts()
 
+    dataset_details_df = build_dataset_details_df(
+        benchmark_configs=benchmarks,
+        data_root_fn=lambda key: BENCHMARK_ROOT / "data" / key,
+    )
+
     exp10_error_path = None
     if any(str(e).startswith("10") for e in experiment_ids):
         cross.COMPARISON_DIR = COMPARISON_DIR
@@ -481,12 +504,22 @@ def run_comparison(
         results_df=results_df,
         deltas_df=deltas_df,
         paired_df=paired_df,
+        dataset_details_df=dataset_details_df,
         ts=ts,
         exp10_error_path=exp10_error_path,
         benchmarks=benchmarks,
         experiment_ids=experiment_ids,
         seeds=seeds,
     )
+
+    if not dataset_details_df.empty:
+        details_json = COMPARISON_DIR / f"dataset_details_{ts}.json"
+        details_payload = dataset_details_df.to_dict(orient="records")
+        details_json.write_text(json.dumps(details_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        latest_details = COMPARISON_DIR / "dataset_details_latest.json"
+        if latest_details.exists():
+            latest_details.unlink()
+        shutil.copy2(details_json, latest_details)
 
     json_path = COMPARISON_DIR / f"cross_comparison_{ts}.json"
     json_path.write_text(json.dumps({"rows": rows, "exported_at": ts}, indent=2, default=str), encoding="utf-8")
