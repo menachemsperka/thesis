@@ -12,6 +12,7 @@ Also supports custom ``--experiments`` with the full split × train-mode grid fr
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -70,6 +71,7 @@ from split_stats import build_dataset_details_df  # noqa: E402
 
 COMPARISON_DIR = BENCHMARK_ROOT / "outputs" / "cross_comparison"
 BASE_CRF_INDEX_PATH = COMPARISON_DIR / "cross_comparison_base_crf_ready_index.json"
+CHECKPOINT_SCHEMA_VERSION = 2
 
 EXP_NAMES = {
     "01": "Regular NER (Exp01 baseline)",
@@ -145,6 +147,61 @@ def _run_key(benchmark_key: str, exp_id: str, condition_key: str) -> str:
     return f"{benchmark_key}||exp{exp_id}||{condition_key}"
 
 
+def _row_run_key(row: dict[str, Any]) -> str | None:
+    bk = str(row.get("benchmark_key", "")).strip()
+    exp = str(row.get("experiment_id", "")).strip().replace("exp", "")
+    ck = str(row.get("condition_key", "")).strip()
+    if bk and exp and ck:
+        return _run_key(bk, exp, ck)
+    return None
+
+
+def _run_plan_keys(run_plan: list[tuple[BenchmarkConfig, str, dict[str, Any]]]) -> set[str]:
+    return {_run_key(cfg.key, exp_id, cond["key"]) for cfg, exp_id, cond in run_plan}
+
+
+def _run_plan_fingerprint(
+    *,
+    run_plan: list[tuple[BenchmarkConfig, str, dict[str, Any]]],
+    experiment_ids: list[str],
+    regimes: list[str],
+    seeds: list[int],
+    train_modes: list[str],
+) -> str:
+    payload = {
+        "schema": CHECKPOINT_SCHEMA_VERSION,
+        "experiments": sorted(experiment_ids),
+        "regimes": sorted(regimes),
+        "seeds": sorted(int(s) for s in seeds),
+        "train_modes": sorted(train_modes),
+        "run_keys": sorted(_run_plan_keys(run_plan)),
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
+
+
+def _filter_rows_to_plan(rows: list[dict[str, Any]], plan_keys: set[str]) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rk = _row_run_key(row)
+        if rk and rk in plan_keys:
+            kept.append(row)
+    return kept
+
+
+def _completed_keys_from_rows(rows: list[dict[str, Any]], plan_keys: set[str]) -> set[str]:
+    done: set[str] = set()
+    for row in rows:
+        if str(row.get("status", "")).startswith("error"):
+            continue
+        rk = _row_run_key(row)
+        if rk and rk in plan_keys:
+            done.add(rk)
+    return done
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     cross._atomic_write_json(path, payload)
 
@@ -157,15 +214,25 @@ def _save_checkpoint(
     started_at: str,
     run_counter: int,
     total_runs: int,
+    *,
+    run_plan_fingerprint: str,
+    regimes: list[str],
+    seeds: list[int],
+    train_modes: list[str],
 ) -> None:
     payload = {
         "name": "benchmark_cross_comparison_checkpoint",
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "run_plan_fingerprint": run_plan_fingerprint,
         "started_at": started_at,
         "updated_at": datetime.now().isoformat(),
         "run_counter": run_counter,
         "total_runs": total_runs,
         "benchmarks": [b.key for b in benchmarks],
         "experiments": experiment_ids,
+        "regimes": regimes,
+        "seeds": seeds,
+        "train_modes": train_modes,
         "rows": rows,
     }
     _atomic_write_json(path, payload)
@@ -383,6 +450,7 @@ def run_comparison(
     prepare_augmentation_only: bool,
     dry_run: bool,
     force_augmentation: bool = False,
+    fresh: bool = False,
 ) -> None:
     os.chdir(PROJECT_ROOT)
     cross.COMPARISON_DIR = COMPARISON_DIR  # noqa: SLF001 — consolidate error analysis output dir
@@ -528,28 +596,63 @@ def run_comparison(
         f"(exp{BENCHMARK_BASELINE_EXPERIMENT}: {n_base_runs}, "
         f"exp{BENCHMARK_TREATMENT_EXPERIMENT}: {n_treat_runs})"
     )
+    plan_keys = _run_plan_keys(run_plan)
+    plan_fingerprint = _run_plan_fingerprint(
+        run_plan=run_plan,
+        experiment_ids=experiment_ids,
+        regimes=regimes,
+        seeds=seeds,
+        train_modes=train_modes,
+    )
     checkpoint_path = checkpoint_file or (COMPARISON_DIR / "benchmark_cross_comparison_checkpoint.json")
     rows: list[dict] = []
     completed: set[str] = set()
     started_at = datetime.now().isoformat()
-    run_counter = 0
 
-    if resume and checkpoint_path.exists():
+    if fresh and checkpoint_path.exists():
+        backup = checkpoint_path.with_name(
+            f"{checkpoint_path.stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        )
+        shutil.copy2(checkpoint_path, backup)
+        _log(f"--fresh: checkpoint backed up to {backup} (starting empty for this run plan)")
+    elif fresh:
+        _log("--fresh: starting with no checkpoint resume")
+
+    if resume and not fresh and checkpoint_path.exists():
         cp = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-        rows = [r for r in cp.get("rows", []) if isinstance(r, dict)]
-        for r in rows:
-            if str(r.get("status", "")).startswith("error"):
-                continue
-            bk = str(r.get("benchmark_key", ""))
-            exp = str(r.get("experiment_id", "")).replace("exp", "")
-            ck = str(r.get("condition_key", ""))
-            if bk and exp and ck:
-                completed.add(_run_key(bk, exp, ck))
-        run_counter = len(completed)
-        started_at = str(cp.get("started_at") or started_at)
-        _log(f"Resume: {len(completed)} completed runs loaded from {checkpoint_path}")
-    elif resume:
+        cp_fp = str(cp.get("run_plan_fingerprint") or "")
+        cp_rows = [r for r in cp.get("rows", []) if isinstance(r, dict)]
+        if cp_fp and cp_fp != plan_fingerprint:
+            backup = checkpoint_path.with_name(
+                f"{checkpoint_path.stem}_stale_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            )
+            shutil.copy2(checkpoint_path, backup)
+            _log(
+                f"Checkpoint run plan differs from current CLI (experiments/regimes/seeds/conditions). "
+                f"Not reusing {len(cp_rows)} prior rows. Backup: {backup}"
+            )
+            rows = []
+            completed = set()
+        else:
+            if not cp_fp:
+                _log(
+                    f"Checkpoint has no run_plan_fingerprint (older runner). "
+                    f"Keeping only rows that match the current plan ({total_runs} runs)."
+                )
+            rows = _filter_rows_to_plan(cp_rows, plan_keys)
+            dropped = len(cp_rows) - len(rows)
+            if dropped:
+                _log(f"Resume: dropped {dropped} checkpoint rows outside the current run plan")
+            completed = _completed_keys_from_rows(rows, plan_keys)
+            started_at = str(cp.get("started_at") or started_at)
+            _log(
+                f"Resume: {len(completed)}/{total_runs} runs complete for this plan "
+                f"({checkpoint_path})"
+            )
+    elif resume and not fresh:
         _log(f"Resume requested but checkpoint not found: {checkpoint_path}. Starting fresh.")
+
+    progress_done = len(completed)
 
     base_crf_mem: dict[str, dict[str, Any]] = {}
     base_crf_index = cross._load_base_index(BASE_CRF_INDEX_PATH)
@@ -561,10 +664,10 @@ def run_comparison(
         if rk in completed:
             continue
 
-        run_counter += 1
+        progress_done += 1
         t0 = time.time()
         _log(
-            f"Run {run_counter}/{total_runs} | {cfg.display_name} | exp{exp_id} | {cond['short_label']}"
+            f"Run {progress_done}/{total_runs} | {cfg.display_name} | exp{exp_id} | {cond['short_label']}"
         )
 
         os.environ["THESIS_NER_CSV"] = str(cond["corpus_csv"])
@@ -676,10 +779,15 @@ def run_comparison(
             benchmarks,
             experiment_ids,
             started_at,
-            run_counter,
+            len(completed),
             total_runs,
+            run_plan_fingerprint=plan_fingerprint,
+            regimes=regimes,
+            seeds=seeds,
+            train_modes=train_modes,
         )
 
+    rows = _filter_rows_to_plan(rows, plan_keys)
     results_df = pd.DataFrame(rows)
     deltas_df = _build_deltas_paper_vs_random(results_df)
     paired_df = _paired_summary(deltas_df)
@@ -693,9 +801,16 @@ def run_comparison(
     )
 
     exp10_error_path = None
-    if any(str(e).startswith("10") for e in experiment_ids):
+    if BENCHMARK_TREATMENT_EXPERIMENT in experiment_ids:
         cross.COMPARISON_DIR = COMPARISON_DIR
-        exp10_error_path = cross._consolidate_exp10_error_analysis(rows, ts)
+        exp10_rows = [
+            r
+            for r in rows
+            if str(r.get("experiment_id", "")).strip() in {"exp10_svm_ready", "exp10_fusion_ready"}
+            or str(r.get("experiment_id", "")).strip().startswith("exp10_")
+        ]
+        if exp10_rows:
+            exp10_error_path = cross._consolidate_exp10_error_analysis(exp10_rows, ts)
 
     xlsx_path = _export_workbook(
         results_df=results_df,
@@ -751,6 +866,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", type=Path, default=BENCHMARK_ROOT / "hf_cache")
     p.add_argument("--base-mode", choices=["auto", "reuse", "retrain"], default="auto")
     p.add_argument("--resume", action="store_true")
+    p.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Ignore checkpoint progress for this run plan (backs up existing checkpoint if present).",
+    )
     p.add_argument("--checkpoint-file", type=Path, default=None)
     p.add_argument("--prepare-only", action="store_true")
     p.add_argument(
@@ -817,6 +937,7 @@ def main() -> None:
         prepare_augmentation_only=args.prepare_augmentation_only,
         dry_run=args.dry_run,
         force_augmentation=args.force_augmentation,
+        fresh=args.fresh,
     )
 
 
