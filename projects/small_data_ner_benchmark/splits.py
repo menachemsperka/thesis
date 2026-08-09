@@ -62,9 +62,8 @@ def prepare_benchmark_assets(
     all_for_labels.extend(test)
 
     corpus_csv = write_corpus_csv(all_for_labels, data_root / "corpus.csv")
-    pool = sample_sentence_pool(train, SMALL_POOL_SIZE, pool_seed)
-    pool_path = data_root / "pool_300.json"
-    pool_path.write_text(json.dumps(pool, ensure_ascii=False, indent=2), encoding="utf-8")
+    # small_300: each split seed samples its own 300-sentence pool from official train (pool_seed unused).
+    _ = pool_seed
     full_pool_path = data_root / "sentences_full_train.json"
     full_pool_path.write_text(
         json.dumps([{"text": s["text"], "labels": s["labels"]} for s in train], ensure_ascii=False, indent=2),
@@ -73,7 +72,6 @@ def prepare_benchmark_assets(
 
     return {
         "corpus_csv": corpus_csv,
-        "pool_path": pool_path,
         "full_pool_path": full_pool_path,
         "n_train_official": len(train),
         "n_test_official": len(test),
@@ -88,11 +86,15 @@ def generate_regime_splits(
     split_ratio: float = SPLIT_RATIO,
 ) -> list[dict[str, Any]]:
     """Write train/eval JSON for each (variant × seed) on the regime sentence pool."""
+    full_train: list[dict] | None = None
+    source_sentences: list[dict] | None = None
     if regime == REGIME_SMALL:
-        pool = _load_sentence_json(data_root / "pool_300.json")
-        if len(pool) != SMALL_POOL_SIZE:
-            raise ValueError(f"Expected {SMALL_POOL_SIZE} sentences in pool, got {len(pool)}")
-        source_sentences = pool
+        full_train = _load_sentence_json(data_root / "sentences_full_train.json")
+        if len(full_train) < SMALL_POOL_SIZE:
+            raise ValueError(
+                f"Official train has {len(full_train)} sentences; need at least {SMALL_POOL_SIZE} "
+                f"for small_300 per-seed pools."
+            )
     elif regime == REGIME_FULL:
         source_sentences = _load_sentence_json(data_root / "sentences_full_train.json")
     else:
@@ -107,7 +109,17 @@ def generate_regime_splits(
             raise KeyError(f"Unknown split variant: {variant}")
         seed_files: dict[str, dict[str, str]] = {}
         for seed in seeds:
-            train_sents, eval_sents = fn(source_sentences, split_ratio, seed)
+            if regime == REGIME_SMALL:
+                if full_train is None:
+                    raise RuntimeError("full_train not loaded for small_300")
+                pool = sample_sentence_pool(full_train, SMALL_POOL_SIZE, seed)
+                train_sents, eval_sents = fn(pool, split_ratio, seed)
+                pool_n = len(pool)
+            else:
+                if source_sentences is None:
+                    raise RuntimeError("source_sentences not loaded for full regime")
+                train_sents, eval_sents = fn(source_sentences, split_ratio, seed)
+                pool_n = len(source_sentences)
             safe = variant.replace(" ", "_")
             train_name = f"{safe}_seed{seed}_train.json"
             eval_name = f"{safe}_seed{seed}_eval.json"
@@ -116,7 +128,8 @@ def generate_regime_splits(
             seed_files[str(seed)] = {
                 "train_file": f"{regime}/{train_name}",
                 "eval_file": f"{regime}/{eval_name}",
-                "pool_n_sentences": len(source_sentences),
+                "pool_n_sentences": pool_n,
+                "pool_sample_seed": seed if regime == REGIME_SMALL else None,
                 "split_ratio": split_ratio,
                 "stats": {
                     "train": summarize_sentences(train_sents),
@@ -153,6 +166,7 @@ def write_split_meta(
         "corpus_csv": str(corpus_csv),
         "split_ratio": SPLIT_RATIO,
         "small_pool_size": SMALL_POOL_SIZE,
+        "small_pool_sampling": "per_seed",
         "baseline_variant": BEFORE_VARIANT,
         "paper_variant": "after_multilabel_iterative_paper",
         "seeds": seeds,

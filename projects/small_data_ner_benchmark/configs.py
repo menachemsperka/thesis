@@ -24,7 +24,11 @@ TRAIN_MODE_AUGMENTED = "augmented"
 TRAIN_MODES: tuple[str, ...] = (TRAIN_MODE_BASELINE, TRAIN_MODE_AUGMENTED)
 DEFAULT_TRAIN_MODES: tuple[str, ...] = (TRAIN_MODE_BASELINE, TRAIN_MODE_AUGMENTED)
 
-EXPERIMENT_IDS: tuple[str, ...] = ("10_regular", "10_cascade", "10_svm_ready")
+EXPERIMENT_IDS: tuple[str, ...] = ("01", "10_svm_ready")
+
+# Default per-seed comparison: Exp01 baseline vs SVM fusion on paper split + augmentation.
+BENCHMARK_BASELINE_EXPERIMENT = "01"
+BENCHMARK_TREATMENT_EXPERIMENT = "10_svm_ready"
 
 
 @dataclass(frozen=True)

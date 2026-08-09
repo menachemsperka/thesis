@@ -1,13 +1,12 @@
 """
-Cross-benchmark comparison runner (Exp10 on public NER corpora).
+Cross-benchmark comparison runner (public NER corpora).
 
-Mirrors ``run_cross_data_model_comparison.py`` for:
-* Split conditions: simple random vs paper-style multilabel stratified (exp07 variants only)
-* Regimes: 300-sentence pool (small) vs full official train (full)
-* Experiments: ``10_regular``, ``10_cascade``, ``10_svm_ready``
-* Outputs: ``cross_comparison_<ts>.xlsx/json``, checkpoint resume, consolidated Exp10 error analysis
+Per seed (default design):
+* Baseline — ``experiment_01_regular_ner``: non-augmented train, simple random split.
+* Treatment — ``10_svm_ready``: LLM-augmented train, paper-style multilabel stratified split
+  (trains Exp10 CRF bases on that condition, then SVM router fusion).
 
-Colab: set ``os.environ["THESIS_RUN_ENV"] = "colab"`` before running (see README).
+Also supports custom ``--experiments`` with the full split × train-mode grid from ``build_conditions``.
 """
 
 from __future__ import annotations
@@ -46,12 +45,15 @@ import run_cross_data_model_comparison as cross  # noqa: E402
 
 from configs import (  # noqa: E402
     BENCHMARKS,
+    BENCHMARK_BASELINE_EXPERIMENT,
+    BENCHMARK_TREATMENT_EXPERIMENT,
     DEFAULT_BASE_SEED,
     DEFAULT_NUM_SEEDS,
     DEFAULT_SEED_START,
     DEFAULT_TRAIN_MODES,
     EXPERIMENT_IDS,
     REGIMES,
+    SPLIT_VARIANT_PAPER,
     SPLIT_VARIANT_RANDOM,
     TRAIN_MODE_AUGMENTED,
     TRAIN_MODE_BASELINE,
@@ -70,10 +72,39 @@ COMPARISON_DIR = BENCHMARK_ROOT / "outputs" / "cross_comparison"
 BASE_CRF_INDEX_PATH = COMPARISON_DIR / "cross_comparison_base_crf_ready_index.json"
 
 EXP_NAMES = {
+    "01": "Regular NER (Exp01 baseline)",
     "10_regular": "Regular NER (BERT-CRF)",
     "10_cascade": "Cascaded Pipeline (CRF + Consistency)",
     "10_svm_ready": "SVM Router Fusion CRF (Ready)",
 }
+
+DEFAULT_EXPERIMENT_PROFILE = (
+    BENCHMARK_BASELINE_EXPERIMENT,
+    BENCHMARK_TREATMENT_EXPERIMENT,
+)
+
+
+def _condition_matches_experiment(cond: dict[str, Any], exp_id: str) -> bool:
+    """Map each experiment to its intended split variant and train mode."""
+    exp_id = str(exp_id).strip()
+    variant = str(cond.get("variant", ""))
+    train_mode = str(cond.get("train_mode", TRAIN_MODE_BASELINE))
+    if exp_id == BENCHMARK_BASELINE_EXPERIMENT:
+        return variant == SPLIT_VARIANT_RANDOM and train_mode == TRAIN_MODE_BASELINE
+    if exp_id == BENCHMARK_TREATMENT_EXPERIMENT:
+        return variant == SPLIT_VARIANT_PAPER and train_mode == TRAIN_MODE_AUGMENTED
+    return True
+
+
+def _expand_run_plan(
+    conditions: list[dict[str, Any]], experiment_ids: list[str]
+) -> list[tuple[str, dict[str, Any]]]:
+    plan: list[tuple[str, dict[str, Any]]] = []
+    for exp_id in experiment_ids:
+        for cond in conditions:
+            if _condition_matches_experiment(cond, exp_id):
+                plan.append((exp_id, cond))
+    return plan
 
 
 def _now_ts() -> str:
@@ -101,6 +132,8 @@ def _set_benchmark_model_env(cfg: BenchmarkConfig) -> None:
 
 def _meta_covers_prepare(meta: dict[str, Any], seeds: list[int], regimes: list[str]) -> bool:
     """True if split_meta already matches the requested seeds and regimes."""
+    if meta.get("small_pool_sampling") != "per_seed":
+        return False
     prepared = {int(s) for s in (meta.get("seeds") or [])}
     if prepared != set(seeds):
         return False
@@ -136,6 +169,64 @@ def _save_checkpoint(
         "rows": rows,
     }
     _atomic_write_json(path, payload)
+
+
+def _build_treatment_vs_baseline_deltas(results_df: pd.DataFrame) -> pd.DataFrame:
+    """Per seed: treatment (10_svm_ready + aug + paper) minus baseline (exp01 + random)."""
+    if results_df.empty:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for (bench, regime, seed), grp in results_df.groupby(
+        ["benchmark_key", "regime", "seed"], dropna=False
+    ):
+        base = grp[
+            (grp["experiment_id"] == f"exp{BENCHMARK_BASELINE_EXPERIMENT}")
+            & (grp["variant"] == SPLIT_VARIANT_RANDOM)
+            & (grp["train_mode"] == TRAIN_MODE_BASELINE)
+        ]
+        treat = grp[
+            (grp["experiment_id"] == f"exp{BENCHMARK_TREATMENT_EXPERIMENT}")
+            & (grp["variant"] == SPLIT_VARIANT_PAPER)
+            & (grp["train_mode"] == TRAIN_MODE_AUGMENTED)
+        ]
+        if base.empty or treat.empty:
+            continue
+        b_f1 = pd.to_numeric(base["f1"], errors="coerce").iloc[0]
+        t_f1 = pd.to_numeric(treat["f1"], errors="coerce").iloc[0]
+        if pd.isna(b_f1) or pd.isna(t_f1):
+            continue
+        rows.append(
+            {
+                "benchmark_key": bench,
+                "regime": regime,
+                "seed": seed,
+                "f1_exp01_baseline": float(b_f1),
+                "f1_svm_fusion_paper_aug": float(t_f1),
+                "delta_f1_treatment_minus_baseline": float(t_f1 - b_f1),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _paired_summary_treatment(deltas_df: pd.DataFrame) -> pd.DataFrame:
+    if deltas_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for keys, grp in deltas_df.groupby(["benchmark_key", "regime"]):
+        bench, regime = keys
+        vals = pd.to_numeric(grp["delta_f1_treatment_minus_baseline"], errors="coerce").dropna()
+        if vals.empty:
+            continue
+        rows.append(
+            {
+                "benchmark_key": bench,
+                "regime": regime,
+                "n_seeds": len(vals),
+                "delta_mean": float(vals.mean()),
+                "delta_std": float(vals.std(ddof=1)) if len(vals) > 1 else 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _build_deltas_paper_vs_random(results_df: pd.DataFrame) -> pd.DataFrame:
@@ -198,6 +289,8 @@ def _export_workbook(
     results_df: pd.DataFrame,
     deltas_df: pd.DataFrame,
     paired_df: pd.DataFrame,
+    treatment_deltas_df: pd.DataFrame,
+    treatment_paired_df: pd.DataFrame,
     dataset_details_df: pd.DataFrame,
     ts: str,
     exp10_error_path: Path | None,
@@ -230,14 +323,20 @@ def _export_workbook(
     doc_rows = [
         {"Section": "Design", "Key": "Benchmarks", "Value": ", ".join(b.display_name for b in benchmarks)},
         {"Section": "Design", "Key": "Split variants", "Value": "Simple random; Multilabel stratified (paper-style)"},
-        {"Section": "Design", "Key": "Regimes", "Value": "small_300 (300-sentence pool, 70% train / 30% eval); full (official train pool, same ratio)"},
+        {"Section": "Design", "Key": "Regimes", "Value": "small_300 (per seed: sample 300 from official train, then 70% train / 30% eval); full (all official train, same 70/30 per seed)"},
         {"Section": "Design", "Key": "Dataset details sheet", "Value": "Per seed: train/eval sentences, tokens, entity spans, tokens per entity type (JSON columns)"},
         {"Section": "Design", "Key": "Train modes", "Value": "baseline (original train split); augmented (exp08 LLM mask-fill on train only, same eval)"},
         {"Section": "Design", "Key": "Augmentation", "Value": "THESIS_EXP08_MULTIPLIER (default 3); fill-mask model = benchmark encoder unless THESIS_AUGMENTATION_MODEL_NAME set"},
         {"Section": "Design", "Key": "Seeds", "Value": f"{seeds[0]}..{seeds[-1]} ({len(seeds)} paired seeds)"},
+        {"Section": "Design", "Key": "Default comparison", "Value": (
+            f"Baseline: exp{BENCHMARK_BASELINE_EXPERIMENT} (random split, no augmentation); "
+            f"Treatment: exp{BENCHMARK_TREATMENT_EXPERIMENT} (paper stratified split, augmented train)"
+        )},
         {"Section": "Design", "Key": "Experiments", "Value": ", ".join(experiment_ids)},
+        {"Section": "Interpretation", "Key": "delta_f1_treatment_minus_baseline",
+         "Value": "Positive => SVM fusion (paper + aug) beat Exp01 baseline (random, no aug) on the same seed/regime"},
         {"Section": "Interpretation", "Key": "delta_f1_paper_minus_random",
-         "Value": "Positive => paper-style stratified split improved F1 vs simple random (same seed)"},
+         "Value": "Only when both split variants are run for the same experiment (legacy grid mode)"},
     ]
     doc_df = pd.DataFrame(doc_rows)
 
@@ -251,6 +350,10 @@ def _export_workbook(
             deltas_df.to_excel(writer, sheet_name="deltas_split_variants", index=False)
         if not paired_df.empty:
             paired_df.to_excel(writer, sheet_name="paired_summary", index=False)
+        if not treatment_deltas_df.empty:
+            treatment_deltas_df.to_excel(writer, sheet_name="deltas_treatment_vs_baseline", index=False)
+        if not treatment_paired_df.empty:
+            treatment_paired_df.to_excel(writer, sheet_name="paired_treatment_summary", index=False)
         doc_df.to_excel(writer, sheet_name="documentation", index=False)
         if exp10_error_path and exp10_error_path.exists():
             pd.DataFrame(
@@ -382,37 +485,48 @@ def run_comparison(
         )
 
     n_aug_cond = sum(1 for c in all_conditions if c.get("train_mode") == TRAIN_MODE_AUGMENTED)
-    n_base_cond = len(all_conditions) - n_aug_cond
     if TRAIN_MODE_AUGMENTED in train_modes and n_aug_cond == 0:
         raise ValueError(
             "No augmented conditions in the run plan (0 *_augmented_train.json files found). "
             "Run --prepare-augmentation-only for your benchmarks, then --resume."
         )
 
+    if BENCHMARK_TREATMENT_EXPERIMENT in experiment_ids and not use_aug:
+        raise ValueError(
+            f"Experiment {BENCHMARK_TREATMENT_EXPERIMENT} requires augmented train splits. "
+            "Use --train-modes baseline,augmented (default) and do not pass --skip-augmentation."
+        )
+
+    run_plan: list[tuple[BenchmarkConfig, str, dict[str, Any]]] = []
+    for cfg in benchmarks:
+        conds = [c for c in all_conditions if c.get("benchmark_key") == cfg.key]
+        for exp_id, cond in _expand_run_plan(conds, experiment_ids):
+            run_plan.append((cfg, exp_id, cond))
+
+    if BENCHMARK_TREATMENT_EXPERIMENT in experiment_ids:
+        n_treat = sum(1 for _, e, _ in run_plan if e == BENCHMARK_TREATMENT_EXPERIMENT)
+        if n_treat == 0:
+            raise ValueError(
+                "No treatment runs in plan (paper stratified + augmented). "
+                "Run --prepare-augmentation-only, then retry."
+            )
+
     if dry_run:
-        if all_conditions:
-            n_runs = len(all_conditions) * len(experiment_ids)
-            print(
-                f"Planned: {len(benchmarks)} benchmarks × {len(all_conditions)} conditions "
-                f"× {len(experiment_ids)} experiments = {n_runs} runs"
-            )
-            for c in all_conditions[:15]:
-                print(f"  {c['key']}")
-            if len(all_conditions) > 15:
-                print(f"  ... +{len(all_conditions) - 15} more")
-        else:
-            est = len(benchmarks) * len(regimes) * 2 * len(seeds)
-            print(
-                f"Dry-run (splits not materialized): ~{est} conditions/benchmark after --prepare-only "
-                f"(2 split variants × {len(seeds)} seeds × {len(regimes)} regimes)"
-            )
+        n_runs = len(run_plan)
+        print(f"Planned: {len(benchmarks)} benchmarks × {n_runs} matched (experiment, condition) pairs")
+        for _cfg, exp_id, cond in run_plan[:20]:
+            print(f"  exp{exp_id} | {cond['key']}")
+        if len(run_plan) > 20:
+            print(f"  ... +{len(run_plan) - 20} more")
         return
 
-    total_runs = len(all_conditions) * len(experiment_ids)
+    total_runs = len(run_plan)
+    n_base_runs = sum(1 for _, e, c in run_plan if e == BENCHMARK_BASELINE_EXPERIMENT)
+    n_treat_runs = sum(1 for _, e, c in run_plan if e == BENCHMARK_TREATMENT_EXPERIMENT)
     _log(
-        f"Run plan: {len(all_conditions)} conditions "
-        f"({n_base_cond} baseline, {n_aug_cond} augmented) × {len(experiment_ids)} experiments "
-        f"= {total_runs} runs"
+        f"Run plan: {total_runs} runs "
+        f"(exp{BENCHMARK_BASELINE_EXPERIMENT}: {n_base_runs}, "
+        f"exp{BENCHMARK_TREATMENT_EXPERIMENT}: {n_treat_runs})"
     )
     checkpoint_path = checkpoint_file or (COMPARISON_DIR / "benchmark_cross_comparison_checkpoint.json")
     rows: list[dict] = []
@@ -440,138 +554,137 @@ def run_comparison(
     base_crf_mem: dict[str, dict[str, Any]] = {}
     base_crf_index = cross._load_base_index(BASE_CRF_INDEX_PATH)
 
-    for cfg in benchmarks:
+    for cfg, exp_id, cond in run_plan:
         _set_benchmark_model_env(cfg)
-        conditions = build_conditions(
-            cfg_key=cfg.key,
-            cfg_display=cfg.display_name,
-            data_root=BENCHMARK_ROOT / "data" / cfg.key,
-            regimes=regimes,
-            train_modes=train_modes,
+        exp_name = EXP_NAMES.get(exp_id, exp_id)
+        rk = _run_key(cfg.key, exp_id, cond["key"])
+        if rk in completed:
+            continue
+
+        run_counter += 1
+        t0 = time.time()
+        _log(
+            f"Run {run_counter}/{total_runs} | {cfg.display_name} | exp{exp_id} | {cond['short_label']}"
         )
 
-        for exp_id in experiment_ids:
-            exp_name = EXP_NAMES.get(exp_id, exp_id)
-            for cond in conditions:
-                rk = _run_key(cfg.key, exp_id, cond["key"])
-                if rk in completed:
-                    continue
+        os.environ["THESIS_NER_CSV"] = str(cond["corpus_csv"])
+        os.environ["THESIS_SPLIT_SEED"] = str(cond["seed"])
+        os.environ["THESIS_CURRENT_CONDITION_KEY"] = cond["key"]
+        os.environ["THESIS_CURRENT_EXP_ID"] = f"exp{exp_id}"
 
-                run_counter += 1
-                t0 = time.time()
-                _log(
-                    f"Run {run_counter}/{total_runs} | {cfg.display_name} | exp{exp_id} | {cond['short_label']}"
+        payload: dict[str, Any] = {}
+        metrics: dict[str, Any] = {}
+        reused = False
+        try:
+            if exp_id in cross.EXP10_READY_DEPENDENT_EXP_IDS:
+                base_entry, reused = cross._ensure_base_artifacts_crf(
+                    model_id=cfg.model_id,
+                    model_display=cfg.display_name,
+                    condition=cond,
+                    base_mode=base_mode,
+                    base_mem=base_crf_mem,
+                    base_index=base_crf_index,
+                    base_index_path=BASE_CRF_INDEX_PATH,
                 )
-
-                os.environ["THESIS_NER_CSV"] = str(cond["corpus_csv"])
-                os.environ["THESIS_SPLIT_SEED"] = str(cond["seed"])
-                os.environ["THESIS_CURRENT_CONDITION_KEY"] = cond["key"]
-                os.environ["THESIS_CURRENT_EXP_ID"] = f"exp{exp_id}"
-
-                payload: dict[str, Any] = {}
-                metrics: dict[str, Any] = {}
-                reused = False
+                cross._set_ready_env_crf(
+                    base_entry["exp10_regular_metrics_file"],
+                    base_entry["exp10_cascade_metrics_file"],
+                )
                 try:
-                    if exp_id in cross.EXP10_READY_DEPENDENT_EXP_IDS:
-                        base_entry, reused = cross._ensure_base_artifacts_crf(
-                            model_id=cfg.model_id,
-                            model_display=cfg.display_name,
-                            condition=cond,
-                            base_mode=base_mode,
-                            base_mem=base_crf_mem,
-                            base_index=base_crf_index,
-                            base_index_path=BASE_CRF_INDEX_PATH,
-                        )
-                        cross._set_ready_env_crf(
-                            base_entry["exp10_regular_metrics_file"],
-                            base_entry["exp10_cascade_metrics_file"],
-                        )
-                        try:
-                            payload = cross._import_experiment(exp_id).run()
-                            metrics = cross._extract_metrics(payload)
-                        finally:
-                            cross._clear_ready_env_crf()
-                    elif exp_id in {"10_regular", "10_cascade"}:
-                        base_entry, reused = cross._ensure_base_artifacts_crf(
-                            model_id=cfg.model_id,
-                            model_display=cfg.display_name,
-                            condition=cond,
-                            base_mode=base_mode,
-                            base_mem=base_crf_mem,
-                            base_index=base_crf_index,
-                            base_index_path=BASE_CRF_INDEX_PATH,
-                        )
-                        result_key = "exp10_regular" if exp_id == "10_regular" else "exp10_cascade"
-                        payload = cross._load_result_payload(base_entry[f"{result_key}_result_file"])
-                        metrics = cross._extract_metrics(payload)
-                        if reused:
-                            metrics["status"] = "ok_reused_base"
-                    else:
-                        raise ValueError(f"Unsupported experiment id: {exp_id}")
-                except Exception as exc:
-                    traceback.print_exc()
-                    metrics = {"f1": None, "precision": None, "recall": None, "status": f"error: {exc}"}
+                    payload = cross._import_experiment(exp_id).run()
+                    metrics = cross._extract_metrics(payload)
                 finally:
-                    os.environ.pop("THESIS_SPLIT_SEED", None)
-                    os.environ.pop("THESIS_CURRENT_CONDITION_KEY", None)
-                    os.environ.pop("THESIS_CURRENT_EXP_ID", None)
-                    try:
-                        from core.model_cleanup import cleanup_training_artifacts_if_enabled
-
-                        cleanup_training_artifacts_if_enabled()
-                    except Exception:
-                        pass
-
-                elapsed = time.time() - t0
-                _log(f"  F1={cross._fmt(metrics.get('f1'))} ({elapsed:.1f}s)")
-
-                variant_label = THESIS_LABELS.get(cond["variant"], cond["variant"])
-                rows.append(
-                    {
-                        "benchmark_key": cfg.key,
-                        "benchmark_label": cfg.display_name,
-                        "model_id": cfg.model_id,
-                        "model_name": cfg.display_name,
-                        "experiment_id": f"exp{exp_id}",
-                        "experiment_name": exp_name,
-                        "data_source": cond["regime"],
-                        "regime": cond["regime"],
-                        "variant": cond["variant"],
-                        "variant_label": variant_label,
-                        "condition_key": cond["key"],
-                        "condition_group_key": cond.get("base_condition_key", cond["key"]),
-                        "condition_group_short": cond.get("base_condition_short", cond["short_label"]),
-                        "condition_label": cond["label"],
-                        "condition_short": cond["short_label"],
-                        "condition_description": cond["description"],
-                        "seed": cond["seed"],
-                        "train_mode": cond.get("train_mode", TRAIN_MODE_BASELINE),
-                        "is_baseline": cond["is_baseline"],
-                        "f1": metrics.get("f1"),
-                        "precision": metrics.get("precision"),
-                        "recall": metrics.get("recall"),
-                        "status": metrics.get("status"),
-                        "result_file": payload.get("result_file", ""),
-                        "metrics_file": payload.get("metrics_file", ""),
-                        "base_artifacts_reused": reused,
-                        "base_mode": base_mode,
-                        "elapsed_seconds": round(elapsed, 1),
-                    }
+                    cross._clear_ready_env_crf()
+            elif exp_id == BENCHMARK_BASELINE_EXPERIMENT:
+                cross._set_presplit_env(cond["train_path"], cond["eval_path"])
+                try:
+                    payload = cross._import_experiment(BENCHMARK_BASELINE_EXPERIMENT).run()
+                    metrics = cross._extract_metrics(payload)
+                finally:
+                    cross._clear_presplit_env()
+            elif exp_id in {"10_regular", "10_cascade"}:
+                base_entry, reused = cross._ensure_base_artifacts_crf(
+                    model_id=cfg.model_id,
+                    model_display=cfg.display_name,
+                    condition=cond,
+                    base_mode=base_mode,
+                    base_mem=base_crf_mem,
+                    base_index=base_crf_index,
+                    base_index_path=BASE_CRF_INDEX_PATH,
                 )
-                completed.add(rk)
-                _save_checkpoint(
-                    checkpoint_path,
-                    rows,
-                    benchmarks,
-                    experiment_ids,
-                    started_at,
-                    run_counter,
-                    total_runs,
-                )
+                result_key = "exp10_regular" if exp_id == "10_regular" else "exp10_cascade"
+                payload = cross._load_result_payload(base_entry[f"{result_key}_result_file"])
+                metrics = cross._extract_metrics(payload)
+                if reused:
+                    metrics["status"] = "ok_reused_base"
+            else:
+                raise ValueError(f"Unsupported experiment id: {exp_id}")
+        except Exception as exc:
+            traceback.print_exc()
+            metrics = {"f1": None, "precision": None, "recall": None, "status": f"error: {exc}"}
+        finally:
+            os.environ.pop("THESIS_SPLIT_SEED", None)
+            os.environ.pop("THESIS_CURRENT_CONDITION_KEY", None)
+            os.environ.pop("THESIS_CURRENT_EXP_ID", None)
+            try:
+                from core.model_cleanup import cleanup_training_artifacts_if_enabled
+
+                cleanup_training_artifacts_if_enabled()
+            except Exception:
+                pass
+
+        elapsed = time.time() - t0
+        _log(f"  F1={cross._fmt(metrics.get('f1'))} ({elapsed:.1f}s)")
+
+        variant_label = THESIS_LABELS.get(cond["variant"], cond["variant"])
+        rows.append(
+            {
+                "benchmark_key": cfg.key,
+                "benchmark_label": cfg.display_name,
+                "model_id": cfg.model_id,
+                "model_name": cfg.display_name,
+                "experiment_id": f"exp{exp_id}",
+                "experiment_name": exp_name,
+                "data_source": cond["regime"],
+                "regime": cond["regime"],
+                "variant": cond["variant"],
+                "variant_label": variant_label,
+                "condition_key": cond["key"],
+                "condition_group_key": cond.get("base_condition_key", cond["key"]),
+                "condition_group_short": cond.get("base_condition_short", cond["short_label"]),
+                "condition_label": cond["label"],
+                "condition_short": cond["short_label"],
+                "condition_description": cond["description"],
+                "seed": cond["seed"],
+                "train_mode": cond.get("train_mode", TRAIN_MODE_BASELINE),
+                "is_baseline": cond["is_baseline"],
+                "f1": metrics.get("f1"),
+                "precision": metrics.get("precision"),
+                "recall": metrics.get("recall"),
+                "status": metrics.get("status"),
+                "result_file": payload.get("result_file", ""),
+                "metrics_file": payload.get("metrics_file", ""),
+                "base_artifacts_reused": reused,
+                "base_mode": base_mode,
+                "elapsed_seconds": round(elapsed, 1),
+            }
+        )
+        completed.add(rk)
+        _save_checkpoint(
+            checkpoint_path,
+            rows,
+            benchmarks,
+            experiment_ids,
+            started_at,
+            run_counter,
+            total_runs,
+        )
 
     results_df = pd.DataFrame(rows)
     deltas_df = _build_deltas_paper_vs_random(results_df)
     paired_df = _paired_summary(deltas_df)
+    treatment_deltas_df = _build_treatment_vs_baseline_deltas(results_df)
+    treatment_paired_df = _paired_summary_treatment(treatment_deltas_df)
     ts = _now_ts()
 
     dataset_details_df = build_dataset_details_df(
@@ -588,6 +701,8 @@ def run_comparison(
         results_df=results_df,
         deltas_df=deltas_df,
         paired_df=paired_df,
+        treatment_deltas_df=treatment_deltas_df,
+        treatment_paired_df=treatment_paired_df,
         dataset_details_df=dataset_details_df,
         ts=ts,
         exp10_error_path=exp10_error_path,
@@ -620,7 +735,14 @@ def run_comparison(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Cross-benchmark Exp10 comparison (public NER corpora).")
     p.add_argument("--benchmarks", default="", help="Comma-separated benchmark keys (default: all).")
-    p.add_argument("--experiments", default=",".join(EXPERIMENT_IDS))
+    p.add_argument(
+        "--experiments",
+        default=",".join(EXPERIMENT_IDS),
+        help=(
+            f"Default: {BENCHMARK_BASELINE_EXPERIMENT} (Exp01 baseline) + "
+            f"{BENCHMARK_TREATMENT_EXPERIMENT} (SVM fusion, paper split + aug)."
+        ),
+    )
     p.add_argument("--regimes", default=",".join(REGIMES))
     p.add_argument("--seeds", default="")
     p.add_argument("--num-seeds", type=int, default=DEFAULT_NUM_SEEDS)
