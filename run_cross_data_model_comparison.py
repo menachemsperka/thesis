@@ -269,6 +269,98 @@ def _now_ts() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def _build_sentence_subset(
+    source_csv: Path,
+    subset_csv: Path,
+    num_sentences: int,
+    seed: int,
+) -> tuple[int, int]:
+    """Sample sentence ids from *source_csv* and write a token-level subset CSV."""
+    if not source_csv.exists():
+        raise FileNotFoundError(f"Source dataset not found: {source_csv}")
+
+    core_dir = PROJECT_ROOT / "core"
+    if str(core_dir) not in sys.path:
+        sys.path.insert(0, str(core_dir))
+    from hebrew_text_io import read_ner_dataset_csv
+
+    df, _encoding_used = read_ner_dataset_csv(source_csv)
+    if "id" not in df.columns:
+        raise ValueError("Expected an 'id' column in dataset for sentence grouping.")
+
+    sentence_ids = df["id"].dropna().drop_duplicates().astype(str).tolist()
+    if not sentence_ids:
+        raise ValueError("No sentence ids found in dataset.")
+
+    take = min(num_sentences, len(sentence_ids))
+    sampled_ids = (
+        pd.Series(sentence_ids)
+        .sample(n=take, random_state=seed, replace=False)
+        .tolist()
+    )
+
+    subset_df = df[df["id"].astype(str).isin(sampled_ids)].copy()
+    subset_csv.parent.mkdir(parents=True, exist_ok=True)
+    subset_df.to_csv(subset_csv, index=False, encoding="utf-8")
+    return take, len(subset_df)
+
+
+def _apply_run_layout(
+    *,
+    output_dir: str | Path | None,
+    subset_sentences: int | None,
+    subset_seed: int,
+) -> dict[str, Any]:
+    """Point comparison outputs (and optional subset splits) at a dedicated folder."""
+    global COMPARISON_DIR, EXP07_SPLITS_DIR, EXP07_AUG_SPLITS_DIR
+
+    manifest: dict[str, Any] = {"created_at": datetime.now().isoformat(timespec="seconds")}
+
+    if output_dir:
+        COMPARISON_DIR = Path(output_dir).expanduser().resolve()
+        COMPARISON_DIR.mkdir(parents=True, exist_ok=True)
+        manifest["output_dir"] = str(COMPARISON_DIR)
+
+    if subset_sentences is not None and subset_sentences > 0:
+        data_dir = COMPARISON_DIR / "data"
+        subset_csv = data_dir / f"ner_dataset_{subset_sentences}_seed{subset_seed}.csv"
+        source_csv = PROJECT_ROOT / "data" / "ner_dataset.csv"
+        used_sentences, used_rows = _build_sentence_subset(
+            source_csv,
+            subset_csv,
+            num_sentences=subset_sentences,
+            seed=subset_seed,
+        )
+        os.environ["THESIS_NER_CSV"] = str(subset_csv)
+        EXP07_SPLITS_DIR = COMPARISON_DIR / "exp07" / "splits"
+        EXP07_AUG_SPLITS_DIR = COMPARISON_DIR / "exp07_augmented" / "splits"
+        os.environ["THESIS_EXP07_SPLITS_DIR"] = str(EXP07_SPLITS_DIR)
+        EXP07_SPLITS_DIR.mkdir(parents=True, exist_ok=True)
+        manifest.update(
+            {
+                "subset_sentences": used_sentences,
+                "subset_token_rows": used_rows,
+                "subset_csv": str(subset_csv),
+                "subset_seed": subset_seed,
+                "exp07_splits_dir": str(EXP07_SPLITS_DIR),
+            }
+        )
+        _log(
+            f"Sentence subset: {used_sentences} sentences ({used_rows} token rows) -> {subset_csv}"
+        )
+
+    manifest_path = COMPARISON_DIR / "run_manifest.json"
+    try:
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        _log(f"WARNING: could not write run manifest: {exc}")
+
+    return manifest
+
+
 def _log(msg: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"  [{ts}] {msg}", flush=True)
@@ -1997,6 +2089,9 @@ def run_comparison(
     rerun_experiments: list[str] | None = None,
     skip_consolidated_error_analysis: bool = False,
     consolidated_error_analysis_scope: str = "both",
+    output_dir: str | Path | None = None,
+    subset_sentences: int | None = None,
+    subset_seed: int = 42,
 ) -> dict:
     """Run all (model × data-condition × experiment) combinations.
 
@@ -2027,6 +2122,18 @@ def run_comparison(
     """
     from common import configure_network_environment
     configure_network_environment()
+
+    if subset_sentences is not None and subset_sentences > 0 and (exp07_source or "auto").strip().lower() == "saved":
+        raise ValueError(
+            "Cannot use --exp07-source saved with --subset-sentences; use auto or rerun "
+            "so exp07 splits are built from the subset CSV."
+        )
+
+    _apply_run_layout(
+        output_dir=output_dir,
+        subset_sentences=subset_sentences,
+        subset_seed=subset_seed,
+    )
 
     base_mode = (base_mode or "auto").strip().lower()
     if base_mode not in {"auto", "reuse", "retrain"}:
@@ -3261,6 +3368,29 @@ if __name__ == "__main__":
             "outputs/cross_comparison/cross_comparison_base_ready_index.json and exit."
         ),
     )
+    parser.add_argument(
+        "--output-dir",
+        default=(os.environ.get("THESIS_CROSS_OUTPUT_DIR") or "").strip(),
+        help=(
+            "Directory for cross-comparison Excel/JSON/checkpoints (default: "
+            "outputs/cross_comparison). Use with --subset-sentences to keep splits isolated."
+        ),
+    )
+    parser.add_argument(
+        "--subset-sentences",
+        type=int,
+        default=int(v) if (v := (os.environ.get("THESIS_SUBSET_SENTENCES") or "").strip()) else 0,
+        help=(
+            "Randomly sample this many sentences from data/ner_dataset.csv before building "
+            "exp07 splits (0 = use full corpus). Requires a dedicated --output-dir recommended."
+        ),
+    )
+    parser.add_argument(
+        "--subset-seed",
+        type=int,
+        default=int((os.environ.get("THESIS_SUBSET_SEED") or "42").strip() or "42"),
+        help="Random seed for --subset-sentences sampling (default: 42).",
+    )
     args = parser.parse_args()
 
     if args.list_base_cache:
@@ -3303,4 +3433,7 @@ if __name__ == "__main__":
         rerun_experiments=rerun_experiments or None,
         skip_consolidated_error_analysis=args.skip_consolidated_error_analysis,
         consolidated_error_analysis_scope=args.consolidated_error_analysis,
+        output_dir=(args.output_dir or None),
+        subset_sentences=(args.subset_sentences if args.subset_sentences > 0 else None),
+        subset_seed=args.subset_seed,
     )

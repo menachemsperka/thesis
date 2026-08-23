@@ -47,8 +47,12 @@ SPLITS_DIR = PROJECT_ROOT / "outputs" / "exp07" / "splits"
 
 def get_splits_dir() -> Path:
     """Return (and create) the canonical directory for saved splits."""
-    SPLITS_DIR.mkdir(parents=True, exist_ok=True)
-    return SPLITS_DIR
+    import os
+
+    raw = (os.environ.get("THESIS_EXP07_SPLITS_DIR") or "").strip()
+    splits_dir = Path(raw) if raw else SPLITS_DIR
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    return splits_dir
 
 
 def save_split(sentences: list[dict], path: Path) -> Path:
