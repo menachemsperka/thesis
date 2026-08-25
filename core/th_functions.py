@@ -109,7 +109,11 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
         colab_kwargs = {
             "output_dir": out_dir,
             "num_train_epochs": num_train_epochs,
-            "fp16": True,
+            "fp16": (os.environ.get("THESIS_TRAINER_FP16") or "1").strip().lower()
+            in {"1", "true", "yes", "on"},
+            "learning_rate": float(
+                (os.environ.get("THESIS_LEARNING_RATE") or "2e-5").strip() or "2e-5"
+            ),
         }
         sig = inspect.signature(TrainingArguments.__init__)
         if disk_minimal:
@@ -255,13 +259,14 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
 # Example usage:
 # train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer, label_list)
 
+
 def setup_token_classification(data, train_data, eval_data,  test_data,  model_name=DEFAULT_MODEL_NAME, local_files_only=False):
     label_list = data.raw_tags.dropna().astype(str).unique().tolist()
     label_to_id = {label: idx for idx, label in enumerate(label_list)}
 
     # Load config explicitly to strip fields that can leak between models
     # in the same process (e.g. finetuning_task from a prior DictaBERT load).
-    from model_backbone import load_token_classification_model
+    from model_backbone import encode_words_for_ner, load_token_classification_model
 
     model, tokenizer, _config = load_token_classification_model(
         model_name,
@@ -276,7 +281,7 @@ def setup_token_classification(data, train_data, eval_data,  test_data,  model_n
             for record in records:
                 words = str(record["text"]).split()
                 labels = [str(label) for label in record["labels"]]
-                encoding = tokenizer(words, is_split_into_words=True, truncation=True)
+                encoding = encode_words_for_ner(tokenizer, words)
                 try:
                     word_ids = encoding.word_ids()
                 except Exception:

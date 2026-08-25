@@ -8,6 +8,21 @@ from transformers import AutoConfig, AutoModel, AutoModelForTokenClassification,
 from transformers.modeling_outputs import TokenClassifierOutput
 
 
+def encode_words_for_ner(tokenizer, words: list[str], *, max_length: int = 512, return_tensors=None):
+    """Tokenize pre-split words with model-specific options (RoBERTa needs add_prefix_space)."""
+    kwargs: dict = {
+        "is_split_into_words": True,
+        "truncation": True,
+        "max_length": max_length,
+    }
+    if return_tensors is not None:
+        kwargs["return_tensors"] = return_tensors
+    tok_name = type(tokenizer).__name__.lower()
+    if "roberta" in tok_name or "xlm" in tok_name:
+        kwargs["add_prefix_space"] = True
+    return tokenizer(words, **kwargs)
+
+
 def model_is_seq2seq_encoder(model_name: str, *, local_files_only: bool = False) -> bool:
     config = AutoConfig.from_pretrained(model_name, local_files_only=local_files_only)
     return config.model_type in {"mt5", "t5"}
@@ -62,7 +77,7 @@ class _EncoderTokenClassifier(nn.Module):
         logits = self.classifier(sequence_output)
         loss = None
         if labels is not None:
-            loss_fct = CrossEntropyLoss()
+            loss_fct = CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
         return TokenClassifierOutput(loss=loss, logits=logits)
 
@@ -90,6 +105,11 @@ def load_token_classification_model(
             delattr(config, attr)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=local_files_only)
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        elif tokenizer.unk_token is not None:
+            tokenizer.pad_token = tokenizer.unk_token
 
     if config.model_type in {"mt5", "t5"}:
         encoder = load_encoder_backbone(model_name, local_files_only=local_files_only)

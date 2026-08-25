@@ -53,6 +53,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset as TorchDataset
 from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
+from model_backbone import encode_words_for_ner
 import numpy as np
 from sklearn.metrics import (
     precision_recall_fscore_support,
@@ -525,9 +526,11 @@ class CascadedNERDataset(TorchDataset):
             else:  # I
                 w_entity.append(1);  w_bio.append(0);    w_type.append(self.etype_to_id.get(etype, 0))
 
-        enc = self.tokenizer(
-            tokens, is_split_into_words=True, truncation=True,
-            max_length=self.max_length, return_tensors="pt",
+        enc = encode_words_for_ner(
+            self.tokenizer,
+            tokens,
+            max_length=self.max_length,
+            return_tensors="pt",
         )
         word_ids = enc.word_ids()
 

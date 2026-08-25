@@ -48,6 +48,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
 
 from crf_layer import LinearChainCRF
+from model_backbone import encode_words_for_ner
 
 import auc_cascaded_pipeline as cap
 
@@ -69,10 +70,9 @@ class CascadedNERDatasetCRF(cap.CascadedNERDataset):
                 w_tags.append("O")
             else:
                 w_tags.append(f"{bio}-{etype}")
-        enc = self.tokenizer(
+        enc = encode_words_for_ner(
+            self.tokenizer,
             tokens,
-            is_split_into_words=True,
-            truncation=True,
             max_length=self.max_length,
             return_tensors="pt",
         )
