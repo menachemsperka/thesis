@@ -12,7 +12,39 @@ _INTERNAL_MODEL = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'mode
 DEFAULT_MODEL_NAME = _INTERNAL_MODEL if os.path.exists(os.path.join(_INTERNAL_MODEL, 'config.json')) else 'dicta-il/dictabert'
 
 
+def _is_multilingual_encoder(model_id: str) -> bool:
+    v = (model_id or "").lower().replace("\\", "/")
+    return any(tok in v for tok in ("xlm-roberta", "xlm_roberta", "mt5", "google/mt5"))
 
+
+def _class_weights_from_dataset(ds_train, num_labels: int) -> torch.Tensor:
+    counts = torch.zeros(num_labels, dtype=torch.float)
+    for feat in getattr(ds_train, "features", []):
+        for lab in feat.get("labels", []):
+            if isinstance(lab, int) and lab != -100 and 0 <= lab < num_labels:
+                counts[lab] += 1
+    return counts.sum() / (num_labels * counts.clamp(min=1.0))
+
+
+class WeightedTokenClassificationTrainer(Trainer):
+    """Trainer with optional class-weighted CE (helps XLM-R / mT5 on small imbalanced NER)."""
+
+    def __init__(self, class_weights: torch.Tensor | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.class_weights = class_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        if self.class_weights is None:
+            return super().compute_loss(model, inputs, return_outputs=return_outputs, **kwargs)
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+        loss_fct = torch.nn.CrossEntropyLoss(
+            weight=self.class_weights.to(device=logits.device, dtype=logits.dtype),
+            ignore_index=-100,
+        )
+        loss = loss_fct(logits.view(-1, logits.shape[-1]), labels.view(-1))
+        return (loss, outputs) if return_outputs else loss
 def balance_with_gai(train_data, data, g_type = 1):
     original_train_data = train_data.copy()
     s_st = generate_label_df(train_data)
@@ -85,6 +117,10 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
         num_train_epochs = 3.0
 
     is_colab = os.environ.get("THESIS_RUN_ENV") == "colab"
+    model_id_env = (os.environ.get("THESIS_MODEL_NAME") or "").strip()
+    multilingual = _is_multilingual_encoder(model_id_env)
+    if multilingual and not epochs_raw:
+        num_train_epochs = 10.0
     
     if is_colab:
         # Colab-specific training arguments
@@ -106,17 +142,42 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
                 os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_checkpoints", unique_run_name
             )
             out_dir = output_path if output_path else default_out_dir
+        fp16_env = (os.environ.get("THESIS_TRAINER_FP16") or "").strip().lower()
+        if fp16_env:
+            use_fp16 = fp16_env in {"1", "true", "yes", "on"}
+        else:
+            use_fp16 = not multilingual
+        lr_env = (os.environ.get("THESIS_LEARNING_RATE") or "").strip()
+        if lr_env:
+            learning_rate = float(lr_env)
+        elif multilingual:
+            learning_rate = 5e-5
+        else:
+            learning_rate = 2e-5
         colab_kwargs = {
             "output_dir": out_dir,
             "num_train_epochs": num_train_epochs,
-            "fp16": (os.environ.get("THESIS_TRAINER_FP16") or "1").strip().lower()
-            in {"1", "true", "yes", "on"},
-            "learning_rate": float(
-                (os.environ.get("THESIS_LEARNING_RATE") or "2e-5").strip() or "2e-5"
-            ),
+            "fp16": use_fp16,
+            "learning_rate": learning_rate,
+            "weight_decay": 0.01,
         }
         sig = inspect.signature(TrainingArguments.__init__)
-        if disk_minimal:
+        if disk_minimal and multilingual:
+            # Small-data multilingual: eval each epoch, keep best F1 in /tmp (not Drive).
+            colab_kwargs.update(
+                {
+                    "save_strategy": "epoch",
+                    "save_total_limit": 1,
+                    "load_best_model_at_end": True,
+                    "metric_for_best_model": "overall_f1",
+                    "greater_is_better": True,
+                }
+            )
+            if "eval_strategy" in sig.parameters:
+                colab_kwargs["eval_strategy"] = "epoch"
+            else:
+                colab_kwargs["evaluation_strategy"] = "epoch"
+        elif disk_minimal:
             # Cross-comparison / thesis runs: keep metrics only; do not fill Google Drive with checkpoints.
             colab_kwargs["save_strategy"] = "no"
             colab_kwargs["load_best_model_at_end"] = False
@@ -167,7 +228,15 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     elif "tokenizer" in trainer_signature.parameters:
         trainer_kwargs["tokenizer"] = tokenizer
 
-    trainer = Trainer(**trainer_kwargs)
+    use_class_weights = multilingual or (
+        (os.environ.get("THESIS_BALANCED_CLASS_WEIGHTS") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    class_weights = (
+        _class_weights_from_dataset(ds_train, len(label_list)) if use_class_weights else None
+    )
+    trainer_cls = WeightedTokenClassificationTrainer if class_weights is not None else Trainer
+    trainer = trainer_cls(class_weights=class_weights, **trainer_kwargs)
     
     # Train the model
     if num_train_epochs > 0.0:
