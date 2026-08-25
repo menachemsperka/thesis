@@ -340,7 +340,7 @@ After prediction, two structural repairs are applied. First, an \texttt{I} tag t
 \end{figure}
 
 \section{Fusion methods}
-Confidence Fusion combines the regular model and the cascaded model. If both systems predict the same label, that label is retained. If they disagree, the label from the more confident system is selected. For token $i$:
+Confidence Fusion combines the regular model and the cascaded model. If both systems predict the same label, that label is retained. If they disagree, the label from the more confident system is selected. Scalar confidences are $p_i^{reg}$ (regular) and $p_i^{cas}$ (cascade). For Exp01 regular NER, $p_i^{reg}=\max_k P(y_i=k\mid x)$ from the tag softmax. For the cascaded model, if the prediction is \texttt{O} then $p_i^{cas}=1-p_i^{entity}$; otherwise $p_i^{cas}=p_i^{entity}\cdot p_i^{bio}$, where $p_i^{entity}$ and $p_i^{bio}$ are sigmoid scores from the entity and B/I heads. For token $i$:
 \[
 \hat{y}_i^{fused}=\begin{cases}
 \hat{y}_i^{reg}, & \hat{y}_i^{reg}=\hat{y}_i^{cas},\\
@@ -349,7 +349,7 @@ Confidence Fusion combines the regular model and the cascaded model. If both sys
 \end{cases}
 \]
 
-SVM Fusion is similar, but it does not use only the raw confidence comparison. It first collects disagreement tokens between the regular and cascaded systems. For training tokens where one of the two systems is correct, a linear SVM learns which source should be trusted. Features include confidence, entropy, probability margin, and disagreement information. The SVM then routes each disagreement token to either the regular or cascaded prediction.
+SVM Fusion uses the same two scalar confidences plus margins and predicted BIO/type parts on disagreement tokens. For training tokens where exactly one of the two systems is correct, a linear SVM (\texttt{LinearSVC}, $C=1$, balanced class weights, \texttt{random\_state=42}) learns which source to trust. Numeric inputs are $p_i^{reg}$, $p_i^{cas}$, both margins, confidence difference, absolute difference, and $\max(p_i^{reg},p_i^{cas})$; categorical inputs are the BIO and entity-type components of each side's prediction (one-hot encoded). Entropy is exported for analysis but is not an SVM feature in the ready implementation. The SVM then routes each disagreement token to either the regular or cascaded prediction; if the router cannot be trained, the rule above is used as fallback.
 
 A limitation is important here: in the present experiment, the SVM router is trained from the available ready predictions and is not evaluated on a separate held-out routing split. Therefore, SVM Fusion should be treated as an exploratory router or an upper-bound-style result, not as a fully independent final deployment result. The non-router Confidence Fusion results are more conservative.
 

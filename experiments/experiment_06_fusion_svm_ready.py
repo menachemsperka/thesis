@@ -7,6 +7,15 @@ retraining any NER models.
 The router is trained on disagreement tokens where one source is clearly correct,
 then applied to ALL disagreements.  Agreement tokens pass through unchanged.
 
+SVM configuration (sklearn Pipeline):
+  - Numeric features: regular_prob, cascade_prob, regular_margin, cascade_margin,
+    prob_diff, abs_prob_diff, max_prob (StandardScaler).
+  - Categorical features: regular_bio, regular_etype, cascade_bio, cascade_etype
+    (OneHotEncoder handle_unknown=ignore).
+  - Classifier: LinearSVC(C=1.0, class_weight="balanced", random_state=42, max_iter=5000).
+  - Training set: disagreements where exactly one of regular/cascade matches gold.
+  - Fallback if router cannot train: confidence fusion (§11.3 in theisis overview.md).
+
 Note: SVM is both trained and evaluated on the same data set.  For strict
 train/test separation use the full training variant (experiment_06_fusion_svm.py).
 """
@@ -20,7 +29,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fusion_ready_sources import run_ready_fusion
+from fusion_ready_sources import (
+    SVM_LINEAR_SVC_PARAMS,
+    SVM_ROUTER_CATEGORICAL_FEATURES,
+    SVM_ROUTER_NUMERIC_FEATURES,
+    run_ready_fusion,
+)
 
 try:
     import joblib
@@ -31,24 +45,11 @@ try:
 except ImportError:
     joblib = None  # type: ignore[misc,assignment]
     Pipeline = None  # type: ignore[misc,assignment]
+    LinearSVC = None  # type: ignore[misc,assignment]
 
 
-_NUMERIC_FEATURES = [
-    "regular_prob",
-    "cascade_prob",
-    "regular_margin",
-    "cascade_margin",
-    "prob_diff",
-    "abs_prob_diff",
-    "max_prob",
-]
-
-_CATEGORICAL_FEATURES = [
-    "regular_bio",
-    "regular_etype",
-    "cascade_bio",
-    "cascade_etype",
-]
+_NUMERIC_FEATURES = list(SVM_ROUTER_NUMERIC_FEATURES)
+_CATEGORICAL_FEATURES = list(SVM_ROUTER_CATEGORICAL_FEATURES)
 
 
 def _sanitize_for_path(value, fallback="unknown") -> str:
@@ -144,7 +145,7 @@ def _train_router(merged: pd.DataFrame):
     model = Pipeline(
         steps=[
             ("pre", preprocess),
-            ("clf", LinearSVC(C=1.0, class_weight="balanced", random_state=42, max_iter=5000)),
+            ("clf", LinearSVC(**SVM_LINEAR_SVC_PARAMS)),
         ]
     )
 

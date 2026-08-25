@@ -33,8 +33,8 @@ Ready experiments:
 * ``06_svm_ready``
 * ``10_regular`` — BERT-CRF regular NER (train or reuse)
 * ``10_cascade`` — Cascaded pipeline with CRF + Step-3 consistency (train or reuse)
-* ``10_fusion_ready`` — Fusion of Exp10 regular + cascaded CRF outputs (inference)
-* ``10_svm_ready`` — SVM router fusion on Exp10 CRF outputs (inference)
+* ``10_fusion_ready`` — Confidence fusion of Exp10 CRF outputs (``regular_prob`` vs ``cascade_prob``; overview §11.2)
+* ``10_svm_ready`` — SVM router fusion on Exp10 CRF outputs (LinearSVC; overview §12)
 
 Outputs
 -------

@@ -10,6 +10,9 @@ Parallel to ``experiment_06_fusion_svm_ready.py``, but sources are:
 The router is a **LinearSVC** trained on **disagreement tokens** where exactly one source is
 correct (same target definition as Section 12 of ``theisis overview.md``).
 
+Confidence inputs and SVM hyperparameters match ``experiment_06_fusion_svm_ready.py``
+(see overview §11.2 and §12.3).
+
 Limitation (important for grading)
 ----------------------------------
 The ready SVM variant **trains and applies the router on the same evaluation split** used to
@@ -29,6 +32,11 @@ import numpy as np
 import pandas as pd
 
 from fusion_crf_ready_sources import run_ready_fusion_crf
+from fusion_ready_sources import (
+    SVM_LINEAR_SVC_PARAMS,
+    SVM_ROUTER_CATEGORICAL_FEATURES,
+    SVM_ROUTER_NUMERIC_FEATURES,
+)
 
 try:
     import joblib
@@ -39,24 +47,11 @@ try:
 except ImportError:
     joblib = None  # type: ignore[misc,assignment]
     Pipeline = None  # type: ignore[misc,assignment]
+    LinearSVC = None  # type: ignore[misc,assignment]
 
 
-_NUMERIC_FEATURES = [
-    "regular_prob",
-    "cascade_prob",
-    "regular_margin",
-    "cascade_margin",
-    "prob_diff",
-    "abs_prob_diff",
-    "max_prob",
-]
-
-_CATEGORICAL_FEATURES = [
-    "regular_bio",
-    "regular_etype",
-    "cascade_bio",
-    "cascade_etype",
-]
+_NUMERIC_FEATURES = list(SVM_ROUTER_NUMERIC_FEATURES)
+_CATEGORICAL_FEATURES = list(SVM_ROUTER_CATEGORICAL_FEATURES)
 
 
 def _sanitize_for_path(value, fallback="unknown") -> str:
@@ -148,7 +143,7 @@ def _train_router(merged: pd.DataFrame):
     model = Pipeline(
         steps=[
             ("pre", preprocess),
-            ("clf", LinearSVC(C=1.0, class_weight="balanced", random_state=42, max_iter=5000)),
+            ("clf", LinearSVC(**SVM_LINEAR_SVC_PARAMS)),
         ]
     )
 

@@ -45,6 +45,35 @@ from common import write_result_excel, write_result_json
 
 
 # ---------------------------------------------------------------------------
+# SVM disagreement router (06_svm_ready / 10_svm_ready) — see theisis overview.md §12
+# ---------------------------------------------------------------------------
+
+SVM_ROUTER_NUMERIC_FEATURES: tuple[str, ...] = (
+    "regular_prob",
+    "cascade_prob",
+    "regular_margin",
+    "cascade_margin",
+    "prob_diff",
+    "abs_prob_diff",
+    "max_prob",
+)
+
+SVM_ROUTER_CATEGORICAL_FEATURES: tuple[str, ...] = (
+    "regular_bio",
+    "regular_etype",
+    "cascade_bio",
+    "cascade_etype",
+)
+
+SVM_LINEAR_SVC_PARAMS: dict = {
+    "C": 1.0,
+    "class_weight": "balanced",
+    "random_state": 42,
+    "max_iter": 5000,
+}
+
+
+# ---------------------------------------------------------------------------
 # Run-context resolution (model / split condition / seed)
 # ---------------------------------------------------------------------------
 
@@ -226,6 +255,7 @@ def load_cascade_from_exp04(xlsx_path: Path) -> pd.DataFrame:
     bio_prob = pd.to_numeric(df["bio_prob"], errors="coerce").fillna(0.0).values
     pred_bio = df["pred_bio"].astype(str).values
 
+    # Scalar cascade confidence for fusion (theisis overview.md §11.2.2).
     cascade_prob = np.where(pred_bio == "O", 1.0 - entity_prob, entity_prob * bio_prob)
     cascade_entropy = np.array([
         -p * math.log(p + 1e-10) - (1 - p) * math.log(1 - p + 1e-10) for p in cascade_prob

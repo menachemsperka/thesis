@@ -10,6 +10,9 @@ Uses the same rule as ``experiment_06_fusion_ready.py``:
 
 No GPU training. Requires cached Excel outputs from ``10_regular`` and ``10_cascade``
 (see ``fusion_crf_ready_sources.run_ready_fusion_crf``).
+
+Confidence scores match ``fusion_ready_sources`` / ``theisis overview.md`` §11.2 (CRF regular
+uses emission probability of the Viterbi tag; cascade uses entity/bio product rule).
 """
 
 from __future__ import annotations

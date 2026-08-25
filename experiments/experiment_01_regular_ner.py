@@ -68,7 +68,11 @@ def _safe_label_name(label_idx: int, label_list: list[str]) -> str | None:
 
 
 def _build_token_predictions(eval_ds, trainer, tokenizer, label_list: list[str]) -> pd.DataFrame:
-    """Build per-token predictions with probabilities, entropy, and margin for downstream fusion."""
+    """Build per-token predictions with probabilities, entropy, and margin for downstream fusion.
+
+    Fusion confidence (``prob`` → ``regular_prob``) is the **max** softmax probability
+    (see ``theisis overview.md`` §11.2.1).
+    """
     preds, _, _ = trainer.predict(eval_ds)
     pred_ids = np.argmax(preds, axis=2)
 

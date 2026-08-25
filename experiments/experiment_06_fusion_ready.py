@@ -2,7 +2,11 @@
 experiment_06_fusion_ready.py — Base Fusion (Ready from Exp01 + Exp04)
 
 Confidence-comparison fusion without retraining: when models disagree,
-select the prediction with the higher confidence score.
+select the prediction with the higher scalar confidence.
+
+Confidence definitions (``regular_prob``, ``cascade_prob``) are computed in
+``fusion_ready_sources.load_regular_from_exp01`` / ``load_cascade_from_exp04``.
+See ``theisis overview.md`` §11.2–§11.3.
 """
 from __future__ import annotations
 

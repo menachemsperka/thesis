@@ -150,6 +150,19 @@ The remaining losses do not mean the method failed conceptually. Fusion only aff
 
 ## Exp05 Fusion From Ready Results (No Retraining)
 
+### Confidence fusion (`06_ready`, `10_fusion_ready`)
+
+Per-token scalar confidences are built in `experiments/fusion_ready_sources.py` (documented in `theisis overview.md` §11.2):
+
+- **Regular (Exp01 / Exp10 regular):** `regular_prob` — Exp01: max tag softmax; Exp10 CRF: softmax mass on the Viterbi tag.
+- **Cascade (Exp04 / Exp10 cascade):** `cascade_prob` — if predicted `O`, `1 - entity_prob`; else `entity_prob * bio_prob`.
+
+On disagreement, the higher score wins (`experiment_06_fusion_ready.py`, `experiment_10_fusion_crf_ready.py`).
+
+### SVM router fusion (`06_svm_ready`, `10_svm_ready`)
+
+`LinearSVC` with features and hyperparameters in `fusion_ready_sources.SVM_*` constants (overview §12.3). Trained only on disagreements where exactly one source is correct; otherwise falls back to confidence fusion.
+
 Two additional scripts fuse Regular NER with **Exp05** (cascaded + Step3 consistency) directly from already-saved artifacts:
 
 - `experiment_06_fusion_regular_and_exp05_ready.py`

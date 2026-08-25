@@ -232,4 +232,15 @@ Same sheets as Exp06 fusion (see `fusion_ready_sources.py` `_SHEET_DOCS`).
 | Confidence fusion (06_ready) | `10_fusion_ready` |
 | SVM router (06_svm_ready) | `10_svm_ready` |
 
+### Fusion confidence and SVM router (same math as Exp06)
+
+Full definitions: **`theisis overview.md` §11.2 (confidence)** and **§12 (SVM)**. Code: `experiments/fusion_ready_sources.py`.
+
+| Side | Confidence column | Rule |
+|------|-------------------|------|
+| Regular CRF | `regular_prob` | Emission softmax probability of the **Viterbi** tag at the token |
+| Cascade CRF | `cascade_prob` | `1 - entity_prob` if pred is `O`, else `entity_prob × bio_prob` |
+
+**Confidence fusion** compares only those two scalars. **SVM fusion** adds margins, prob differences, and one-hot BIO/type parts; see `SVM_ROUTER_*` and `SVM_LINEAR_SVC_PARAMS` in `fusion_ready_sources.py`.
+
 Experiments **01, 04, 05_ready, 06_*** are **unchanged**; Exp10 is an **additive** branch for thesis future-work evaluation.

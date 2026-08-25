@@ -24,7 +24,8 @@ Internally, paths are mapped to the Exp01/Exp04 env names expected by ``run_read
 Teaching note
 -------------
 Compare this file to ``experiments/fusion_ready_sources.py`` docstring: the only difference is
-*which output folders* supply the two prediction streams.
+*which output folders* supply the two prediction streams. Confidence and SVM feature definitions
+are identical (``theisis overview.md`` §11.2–§12).
 """
 
 from __future__ import annotations
