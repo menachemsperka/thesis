@@ -261,24 +261,13 @@ def setup_token_classification(data, train_data, eval_data,  test_data,  model_n
 
     # Load config explicitly to strip fields that can leak between models
     # in the same process (e.g. finetuning_task from a prior DictaBERT load).
-    config = AutoConfig.from_pretrained(
-        model_name,
-        id2label={idx: label for label, idx in label_to_id.items()},
-        label2id=label_to_id,
-        num_labels=len(label_to_id),
-        local_files_only=local_files_only,
-    )
-    for attr in ("finetuning_task",):
-        if hasattr(config, attr):
-            delattr(config, attr)
+    from model_backbone import load_token_classification_model
 
-    model = AutoModelForTokenClassification.from_pretrained(
+    model, tokenizer, _config = load_token_classification_model(
         model_name,
-        config=config,
+        label_list=label_list,
         local_files_only=local_files_only,
-        ignore_mismatched_sizes=True,
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=local_files_only)
     data_collator = DataCollatorForTokenClassification(tokenizer)
 
     class TokenClassificationTorchDataset(torch.utils.data.Dataset):

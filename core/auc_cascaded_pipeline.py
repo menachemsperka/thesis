@@ -1211,7 +1211,9 @@ if __name__ == "__main__":
     )
 
     # ---- Model ----
-    base_model = AutoModel.from_pretrained(BASE_MODEL_NAME, local_files_only=MODEL_LOCAL_ONLY)
+    from model_backbone import load_encoder_backbone
+
+    base_model = load_encoder_backbone(BASE_MODEL_NAME, local_files_only=MODEL_LOCAL_ONLY)
     model = CascadedNERModel(base_model, num_etypes).to(device)
 
     # ---- Optimizer with separate LR groups ----

@@ -5,6 +5,20 @@ Loads pre-computed outputs from Exp01 (Regular NER) and Exp04 (Cascaded Pipeline
 merges them, and provides a generic entry point for applying any fusion strategy
 without retraining.
 
+Per-source confidence (used by ``06_ready`` / ``10_fusion_ready`` and as inputs to
+the SVM router) — see also ``theisis overview.md`` §11.2:
+
+* **Regular** (``token_predictions`` → ``regular_prob``):
+  - Exp01: ``prob = max_k softmax(logits)_k`` over BIO-type tags.
+  - Exp10 CRF: softmax probability of the **Viterbi** predicted tag at that token.
+* **Cascade** (``detailed_results`` → ``cascade_prob``):
+  - If ``pred_bio == O``: ``1 - entity_prob`` (sigmoid entity score from cascade).
+  - Else: ``entity_prob * bio_prob`` (entity sigmoid × B/I sigmoid).
+
+Also loaded: ``regular_entropy``, ``regular_margin`` (Exp01 sheet); loader-derived
+``cascade_entropy``, ``cascade_margin``; merge columns ``prob_diff``, ``abs_prob_diff``,
+``max_prob``; BIO/type parts for the SVM router (§12 in overview).
+
 Requires:
     - Exp01 output with a "token_predictions" sheet (sentence_id, token_idx, token,
       true_label, pred_label, prob, entropy, margin).

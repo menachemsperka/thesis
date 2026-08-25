@@ -20,6 +20,8 @@ Models available in this runner:
 * ``berel``
 * ``hero``
 * ``alephbertgimmel``
+* ``xlm_roberta`` — multilingual RoBERTa (100 languages)
+* ``mt5`` — multilingual T5 encoder + token-classification head
 
 Ready experiments:
 * ``05_ready``
@@ -98,6 +100,8 @@ Environment Variables
     ``01,04,05_ready,06_ready,06_svm_ready``).
 ``THESIS_CROSS_MODELS``
     Comma-separated model keys (default: ``dictabert,berel,hero,alephbertgimmel``).
+    Multilingual baselines: ``xlm_roberta``, ``mt5``. Full set:
+    ``dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5``.
 ``THESIS_CROSS_NUM_SEEDS``
     Seed count for exp07/exp08 preparation (default: ``20`` for publication-quality).
 ``THESIS_SAVE_TRAINED_MODELS``
@@ -196,7 +200,24 @@ MODEL_REGISTRY: dict[str, dict[str, str]] = {
         "display_name": "AlephBERT-Gimmel",
         "description": "AlephBERT-Gimmel base (dicta-il/alephbertgimmel-base)",
     },
+    "xlm_roberta": {
+        "model_id": "FacebookAI/xlm-roberta-base",
+        "display_name": "XLM-RoBERTa-base",
+        "description": "Multilingual RoBERTa (100 languages; facebook/xlm-roberta-base)",
+    },
+    "mt5": {
+        "model_id": "google/mt5-base",
+        "display_name": "mT5-base",
+        "description": "Multilingual T5 encoder baseline (google/mt5-base; encoder + token-classification head)",
+    },
 }
+
+# Comma-separated presets for documentation and THESIS_CROSS_MODELS.
+CROSS_COMPARISON_MODELS_HEBREW = "dictabert,berel,hero,alephbertgimmel"
+CROSS_COMPARISON_MODELS_MULTILINGUAL = "xlm_roberta,mt5"
+CROSS_COMPARISON_MODELS_ALL = (
+    f"{CROSS_COMPARISON_MODELS_HEBREW},{CROSS_COMPARISON_MODELS_MULTILINGUAL}"
+)
 
 # ---------------------------------------------------------------------------
 # Experiment registry
@@ -324,7 +345,15 @@ def _apply_run_layout(
     if subset_sentences is not None and subset_sentences > 0:
         data_dir = COMPARISON_DIR / "data"
         subset_csv = data_dir / f"ner_dataset_{subset_sentences}_seed{subset_seed}.csv"
-        source_csv = PROJECT_ROOT / "data" / "ner_dataset.csv"
+        source_override = (
+            os.environ.get("THESIS_FULL_NER_CSV")
+            or os.environ.get("THESIS_SOURCE_NER_CSV")
+            or ""
+        ).strip()
+        if source_override:
+            source_csv = Path(source_override).expanduser().resolve()
+        else:
+            source_csv = PROJECT_ROOT / "data" / "ner_dataset.csv"
         used_sentences, used_rows = _build_sentence_subset(
             source_csv,
             subset_csv,
@@ -342,6 +371,7 @@ def _apply_run_layout(
                 "subset_token_rows": used_rows,
                 "subset_csv": str(subset_csv),
                 "subset_seed": subset_seed,
+                "source_dataset_csv": str(source_csv),
                 "exp07_splits_dir": str(EXP07_SPLITS_DIR),
             }
         )
@@ -647,6 +677,10 @@ def _normalize_model_id(model_ref: str) -> str | None:
         return "HeNLP/HeRo"
     if "dicta-il/alephbertgimmel-base" in v or "__alephbertgimmel-base" in v:
         return "dicta-il/alephbertgimmel-base"
+    if "xlm-roberta-base" in v or "__xlm-roberta-base" in v:
+        return "FacebookAI/xlm-roberta-base"
+    if "mt5-base" in v or "__mt5-base" in v or "/mt5" in v:
+        return "google/mt5-base"
 
     for info in MODEL_REGISTRY.values():
         mid = info["model_id"]

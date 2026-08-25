@@ -9,14 +9,14 @@ python run_cross_data_model_comparison.py \
 --resume \
 --base-mode auto \
 --experiments 01,04,05_ready,06_ready,06_svm_ready \
---models dictabert,berel,hero,alephbertgimmel \
+--models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
 --condition-sources exp07,exp07+aug \
 --num-seeds 20
 ```
 
 The command runs a controlled comparison of Hebrew Named Entity Recognition (NER) methods. It is not only a script that calls other scripts. It is a complete experimental architecture with:
 
-1. several Hebrew transformer encoders,
+1. several Hebrew and multilingual transformer encoders,
 2. several train/evaluation split strategies,
 3. augmentation-based data variants,
 4. base NER systems,
@@ -36,8 +36,8 @@ The pipeline compares five **core** experiments (01–06 ready track):
 | `01` | Regular NER | Single transformer token-classification model predicts full BIO entity labels directly. |
 | `04` | AUC Cascaded Pipeline | NER is decomposed into entity detection, BIO position, and entity type prediction. |
 | `05_ready` | Cascaded B/I Consistency | Post-processes `04` outputs to repair inconsistent `B-X` followed by `I-Y` predictions. |
-| `06_ready` | Confidence Fusion | Combines `01` and `04`; if they disagree, the more confident source wins. |
-| `06_svm_ready` | SVM Router Fusion | Combines `01` and `04`; an SVM learns which source to trust on disagreement tokens. |
+| `06_ready` | Confidence Fusion | Combines `01` and `04`; if they disagree, compares per-source scalar confidence (`regular_prob` vs `cascade_prob`; see **§11.2**). |
+| `06_svm_ready` | SVM Router Fusion | Combines `01` and `04`; a **LinearSVC** routes disagreements using margins and label parts (**§12**); falls back to confidence fusion if training fails. |
 
 **Optional extension — Experiment 10 (BERT-CRF track):** same cross-comparison runner, separate base cache, adds CRF decoding and CRF fusion (see **Section 12A** and `experiments/experiment_10_README.md`).
 
@@ -56,6 +56,18 @@ The selected models are:
 | `berel` | BEREL 3.0 | Hebrew model with Biblical/Rabbinical orientation. |
 | `hero` | HeRo | Hebrew RoBERTa-style model. |
 | `alephbertgimmel` | AlephBERT-Gimmel | Hebrew BERT-family model. |
+| `xlm_roberta` | XLM-RoBERTa-base | **Multilingual** RoBERTa (100 languages); strong cross-lingual encoder baseline for Hebrew NER without Hebrew-only pretraining. |
+| `mt5` | mT5-base | **Multilingual** T5 (101 languages); compared using the **encoder stack + token-classification head** (same Exp01/04 head design as BERT-family models). |
+
+**Preset strings** (see `run_cross_data_model_comparison.py`):
+
+| Preset | Value |
+|---|---|
+| Hebrew only | `dictabert,berel,hero,alephbertgimmel` |
+| Multilingual only | `xlm_roberta,mt5` |
+| Full comparison (Hebrew + multilingual) | `dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5` |
+
+Multilingual models use the same token-classification and cascaded-pipeline code paths as Hebrew encoders (`core/model_backbone.py` loads mT5 via `MT5EncoderModel` when needed).
 
 The selected condition sources are:
 
@@ -71,6 +83,49 @@ S = \{42,43,44,\ldots,61\}.
 $$
 
 This makes the experiment a paired repeated-measures design rather than a one-off model run.
+
+### 1.1 Full corpus vs 150-sentence pilot (isolated outputs)
+
+Two standard cross-comparison profiles share the **same model list** and experiments; they differ only in corpus size and output folder:
+
+| Profile | Corpus | CLI |
+|---|---|---|
+| **Full labeled set** (~300 sentences) | `data/ner_dataset.csv` | Default paths; omit `--subset-sentences`. Use `--output-dir outputs/cross_comparison_full` (recommended) so checkpoints do not mix with pilot runs. |
+| **150-sentence pilot** | Random 150 sentence ids (fixed by `--subset-seed`) | `--subset-sentences 150 --subset-seed 42 --output-dir outputs/cross_comparison_150sent` (splits + subset CSV live under that folder). |
+
+**Full corpus (all six models, 20 seeds, no augmentation, no CRF):**
+
+```bash
+python run_cross_data_model_comparison.py \
+  --output-dir outputs/cross_comparison_full \
+  --models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
+  --experiments 01,04,05_ready,06_ready,06_svm_ready \
+  --skip-augmentation \
+  --condition-sources exp07 \
+  --exp07-source auto \
+  --base-mode auto \
+  --num-seeds 20 \
+  --consolidated-error-analysis all
+```
+
+**150-sentence pilot (same models and exports; resume with `--resume`):**
+
+```bash
+python run_cross_data_model_comparison.py \
+  --output-dir outputs/cross_comparison_150sent \
+  --subset-sentences 150 \
+  --subset-seed 42 \
+  --models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
+  --experiments 01,04,05_ready,06_ready,06_svm_ready \
+  --skip-augmentation \
+  --condition-sources exp07 \
+  --exp07-source rerun \
+  --base-mode auto \
+  --num-seeds 20 \
+  --consolidated-error-analysis all
+```
+
+Artifacts for the pilot: `{output-dir}/data/ner_dataset_150_seed42.csv`, `{output-dir}/exp07/splits/`, `{output-dir}/run_manifest.json`, plus `cross_comparison_*.xlsx/json` and consolidated error-analysis workbooks. The full-corpus run does **not** overwrite `outputs/exp07/splits/` when the pilot uses its own `--output-dir` and subset flags.
 
 ---
 
@@ -901,28 +956,90 @@ For token $i$:
 
 - regular prediction: $\hat{y}_i^{reg}$,
 - cascaded prediction: $\hat{y}_i^{cas}$,
-- regular confidence: $p_i^{reg}$,
-- cascaded confidence: $p_i^{cas}$.
+- regular confidence: $p_i^{reg}$ (stored as `regular_prob`),
+- cascaded confidence: $p_i^{cas}$ (stored as `cascade_prob`).
 
-### 11.2 Cascaded Confidence
+Implementation: `experiments/fusion_ready_sources.py` (`load_regular_from_exp01`, `load_cascade_from_exp04`, `merge_regular_cascade`).
 
-Exp04 exports entity probability and BIO probability. The fusion loader converts these into a single confidence score.
+### 11.2 Per-Source Confidence (Canonical Definitions)
 
-If the cascaded model predicts `O`, confidence is:
+Ready fusion (`06_ready`, `06_svm_ready`, and Exp10 analogues via the same loader) always compares two **scalar** scores per aligned token. Other columns (entropy, margin) are exported for analysis and for the SVM router, but **confidence fusion itself uses only** $p_i^{reg}$ and $p_i^{cas}$.
+
+#### 11.2.1 Regular path (Exp01 softmax NER, or Exp10 regular CRF via the same sheet layout)
+
+At evaluation time each valid word token gets a tag distribution from the final linear head (softmax over BIO-type labels).
+
+**Exp01 (`experiment_01_regular_ner.py`, `token_predictions` sheet):**
+
+- Softmax probabilities $P(y_i=k\mid x)$ over the full tag set.
+- Predicted tag: $\hat{y}_i^{reg} = \arg\max_k P(y_i=k\mid x)$.
+- Fusion confidence (column `prob` → `regular_prob`):
+
+$$
+p_i^{reg} = \max_k P(y_i=k\mid x).
+$$
+
+**Also exported (not used by confidence fusion):**
+
+$$
+H_i^{reg} = -\sum_k P(y_i=k\mid x)\log(P(y_i=k\mid x)+\epsilon),
+\qquad
+margin_i^{reg} = p_{i,(1)} - p_{i,(2)}.
+$$
+
+**Exp10 regular BERT-CRF (`experiment_10_regular_ner_crf.py`):** decoding is **Viterbi** on the CRF, but confidence for fusion still comes from a **local emission softmax** at the token. Let $\hat{y}_i^{reg}$ be the Viterbi tag and $P_em(k\mid x)$ the softmax over emission scores at that position:
+
+$$
+p_i^{reg} = P_em(\hat{y}_i^{reg}\mid x).
+$$
+
+This is the probability of the **decoded** tag, which can differ from $\max_k P_em(k\mid x)$ when the CRF path overrides the local argmax.
+
+**Legacy Exp01 workbooks** without `token_predictions` receive neutral placeholders (`regular_prob=0.5`) so fusion scripts still run; those scores are not meaningful for calibration.
+
+#### 11.2.2 Cascaded path (Exp04 / Exp10 cascade, `detailed_results`, `eval_mode=predicted`)
+
+The cascade writes per-token `entity_prob` and `bio_prob` from the entity and B/I heads (sigmoid scores at decision time; see §9.3). Let $p_i^{entity}$ and $p_i^{bio}$ denote those stored values. The fusion loader builds full BIO-type labels from `pred_bio` + `pred_etype`, then sets a **single** cascaded confidence:
+
+If the cascaded prediction is `O` (`pred_bio = O`):
 
 $$
 p_i^{cas} = 1 - p_i^{entity}.
 $$
 
-If it predicts an entity, confidence is:
+If the cascaded prediction is an entity (`B` or `I`):
 
 $$
 p_i^{cas} = p_i^{entity} \cdot p_i^{bio}.
 $$
 
-This means the cascaded system must be confident both that the token is an entity and that the BIO position is correct.
+Interpretation: for `O`, confidence is “how strongly non-entity”; for entities, confidence requires both entity detection and B/I position to be confident (product of the two sigmoid probabilities).
 
-### 11.3 Fusion Rule
+**Derived in the loader (not used by confidence fusion):** binary entropy and a margin on $p_i^{cas}$ treated as a Bernoulli parameter:
+
+$$
+H_i^{cas} = -p_i^{cas}\log(p_i^{cas}+\epsilon) - (1-p_i^{cas})\log(1-p_i^{cas}+\epsilon),
+$$
+
+$$
+margin_i^{cas} = 2\,|p_i^{cas} - 0.5|.
+$$
+
+#### 11.2.3 Merged-table extras used later by the SVM router
+
+After the inner join, the loader also computes:
+
+$$
+prob\_diff_i = p_i^{reg} - p_i^{cas},
+\quad
+|prob\_diff|_i,
+\quad
+\max\_prob_i = \max(p_i^{reg}, p_i^{cas}),
+$$
+
+and splits each side’s predicted label into BIO + entity-type parts (`regular_bio`, `regular_etype`, `cascade_bio`, `cascade_etype`).
+
+### 11.3 Confidence Fusion Rule
 
 If both systems agree:
 
@@ -941,6 +1058,8 @@ $$
 $$
 
 This is a simple but scientifically meaningful ensemble rule. It assumes that confidence is a useful proxy for correctness.
+
+**Recorded output:** `selected_confidence` is the confidence of the source that was chosen (`regular_prob` or `cascade_prob`). On agreement tokens both sources share the same label; the implementation still stores the regular-side confidence when it picks the shared label.
 
 ---
 
@@ -990,9 +1109,9 @@ Ambiguous cases are discarded:
 
 ### 12.2 Router Features
 
-For each disagreement token, the feature vector includes numeric and categorical features.
+For each disagreement token, the feature vector includes numeric and categorical features. **Entropy is exported in Exp01 / derived for cascade but is not an SVM input** in the ready implementation (`experiment_06_fusion_svm_ready.py`).
 
-Numeric features:
+Numeric features (column names in code):
 
 $$
 \phi_i^{num} = [
@@ -1006,7 +1125,17 @@ $$
 ].
 $$
 
-Categorical features:
+| Code column | Role |
+|---|---|
+| `regular_prob` | $p_i^{reg}$ (§11.2.1) |
+| `cascade_prob` | $p_i^{cas}$ (§11.2.2) |
+| `regular_margin` | top-two softmax gap (Exp01 / Exp10 regular sheet) |
+| `cascade_margin` | $2|p_i^{cas}-0.5|$ (loader-derived) |
+| `prob_diff` | $p_i^{reg}-p_i^{cas}$ |
+| `abs_prob_diff` | $|p_i^{reg}-p_i^{cas}|$ |
+| `max_prob` | $\max(p_i^{reg},p_i^{cas})$ |
+
+Categorical features (one-hot encoded):
 
 $$
 \phi_i^{cat} = [
@@ -1017,15 +1146,17 @@ TYPE_i^{cas}
 ].
 $$
 
+Code columns: `regular_bio`, `regular_etype`, `cascade_bio`, `cascade_etype` (parsed from full BIO-type labels).
+
 The full router feature vector is:
 
 $$
 \phi_i = [\phi_i^{num}, \phi_i^{cat}].
 $$
 
-Numeric features are standardized. Categorical features are one-hot encoded.
+Numeric block: `StandardScaler`. Categorical block: `OneHotEncoder(handle_unknown="ignore")`, composed via `ColumnTransformer`.
 
-### 12.3 Linear SVM Objective
+### 12.3 Linear SVM — Objective and Hyperparameters
 
 The router is a linear support vector classifier. In simplified binary form, it learns:
 
@@ -1052,13 +1183,22 @@ $$
 C\sum_i \max(0, 1 - y_i^{svm}(w^T\phi_i+b)).
 $$
 
-The implementation uses:
+Ready fusion uses `sklearn.svm.LinearSVC` inside a `Pipeline`:
 
-$$
-C=1.0.
-$$
+| Parameter / component | Value |
+|---|---|
+| Classifier | `LinearSVC` |
+| Regularization `C` | `1.0` |
+| `class_weight` | `"balanced"` |
+| `random_state` | `42` |
+| `max_iter` | `5000` |
+| Numeric preprocessing | `StandardScaler()` on §12.2 numeric columns |
+| Categorical preprocessing | `OneHotEncoder(handle_unknown="ignore")` |
+| Training rows | Disagreement tokens where **exactly one** of regular / cascade matches gold (§12.1) |
+| Minimum data | Both classes (`regular` and `cascade` targets) must appear; else fallback |
+| Fallback | Same rule as §11.3 (higher scalar confidence wins) |
 
-Class weights are balanced so that the router does not simply prefer the majority source.
+Class weights are balanced so that the router does not simply prefer the majority source when one side is correct more often on disagreements.
 
 ### 12.4 Final SVM Fusion Rule
 
@@ -1140,10 +1280,12 @@ Controlled by `THESIS_STEP3_BI_TYPE_RECONCILE=1` in the cascaded wrapper script.
 
 ### 12A.3 Experiment 10_fusion_ready — Confidence Fusion on CRF Outputs
 
-Identical arbitration to Exp06_ready, but inputs are:
+Identical arbitration to §11, but inputs are:
 
 - regular CRF token predictions (`token_predictions` sheet), and
 - cascaded CRF token predictions (`detailed_results`, `eval_mode=predicted`).
+
+Confidence definitions follow §11.2.1 (emission softmax on the Viterbi tag for regular) and §11.2.2 (entity × bio product for cascade). Loader entry point: `experiments/fusion_crf_ready_sources.py` → `fusion_ready_sources.py`.
 
 For token $i$, if $\hat{y}_i^{reg} \neq \hat{y}_i^{cas}$:
 
@@ -1157,7 +1299,7 @@ $$
 
 ### 12A.4 Experiment 10_svm_ready — SVM Router on CRF Disagreements
 
-Same feature vector and LinearSVC objective as Section 12 (`06_svm_ready`), applied to **CRF** disagreement tokens. Router targets:
+Same feature columns and **LinearSVC hyperparameters** as §12.3 (`experiment_10_fusion_svm_ready.py`), applied to **CRF** disagreement tokens. Router targets:
 
 $$
 z_i \in \{regular, cascade\}
@@ -1657,7 +1799,7 @@ D = \text{Hebrew BIO-labeled NER corpus},
 $$
 
 $$
-M = \text{selected Hebrew transformer models},
+M = \text{selected transformer models (Hebrew + multilingual registry keys)},
 $$
 
 $$
@@ -1753,7 +1895,7 @@ $$
 
 ## 21. Short Plain-English Summary
 
-This pipeline is a rigorous experimental system for Hebrew NER. It tests four transformer models across multiple train/evaluation split strategies and augmented data variants. It compares a direct NER model, a cascaded three-step model, a structural consistency repair method, a confidence-based fusion method, and an SVM-based fusion method. Every comparison is repeated across 20 paired seeds so that improvements can be tested statistically rather than judged from a single lucky run.
+This pipeline is a rigorous experimental system for Hebrew NER. It tests **six** transformer encoders (four Hebrew-focused and two multilingual baselines) across multiple train/evaluation split strategies and augmented data variants. It compares a direct NER model, a cascaded three-step model, a structural consistency repair method, a confidence-based fusion method, and an SVM-based fusion method. Every comparison is repeated across 20 paired seeds so that improvements can be tested statistically rather than judged from a single lucky run.
 
 The scientific architecture is therefore:
 

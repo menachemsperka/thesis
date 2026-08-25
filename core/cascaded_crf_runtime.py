@@ -522,7 +522,9 @@ def run_cascaded_crf_pipeline() -> str:
         train_ds, batch_size=cap.TRAINING_CONFIG["train_batch_size"], shuffle=True, collate_fn=collate
     )
 
-    base_model = AutoModel.from_pretrained(cap.BASE_MODEL_NAME, local_files_only=cap.MODEL_LOCAL_ONLY)
+    from model_backbone import load_encoder_backbone
+
+    base_model = load_encoder_backbone(cap.BASE_MODEL_NAME, local_files_only=cap.MODEL_LOCAL_ONLY)
     model = CascadedNERModelCRF(base_model, len(entity_types), len(all_tags), o_tag_id=o_tag_id).to(device)
 
     encoder_params = list(model.encoder.parameters())
