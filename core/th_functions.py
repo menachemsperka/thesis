@@ -12,11 +12,6 @@ _INTERNAL_MODEL = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'mode
 DEFAULT_MODEL_NAME = _INTERNAL_MODEL if os.path.exists(os.path.join(_INTERNAL_MODEL, 'config.json')) else 'dicta-il/dictabert'
 
 
-def _is_multilingual_encoder(model_id: str) -> bool:
-    v = (model_id or "").lower().replace("\\", "/")
-    return any(tok in v for tok in ("xlm-roberta", "xlm_roberta", "mt5", "google/mt5"))
-
-
 def _class_weights_from_dataset(ds_train, num_labels: int) -> torch.Tensor:
     counts = torch.zeros(num_labels, dtype=torch.float)
     for feat in getattr(ds_train, "features", []):
@@ -117,11 +112,9 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
         num_train_epochs = 3.0
 
     is_colab = os.environ.get("THESIS_RUN_ENV") == "colab"
-    model_id_env = (os.environ.get("THESIS_MODEL_NAME") or "").strip()
-    multilingual = _is_multilingual_encoder(model_id_env)
-    if multilingual and not epochs_raw:
-        num_train_epochs = 10.0
-    
+    best_f1_ckpt = (os.environ.get("THESIS_TRAINER_BEST_F1_CHECKPOINT") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     if is_colab:
         # Colab-specific training arguments
         # Generate a unique directory name for checkpoints to prevent crossover matching between different experiments
@@ -146,24 +139,22 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
         if fp16_env:
             use_fp16 = fp16_env in {"1", "true", "yes", "on"}
         else:
-            use_fp16 = not multilingual
+            # Default fp16 on Colab GPU (faster); set THESIS_TRAINER_FP16=0 if unstable.
+            use_fp16 = True
         lr_env = (os.environ.get("THESIS_LEARNING_RATE") or "").strip()
-        if lr_env:
-            learning_rate = float(lr_env)
-        elif multilingual:
-            learning_rate = 5e-5
-        else:
-            learning_rate = 2e-5
+        learning_rate = float(lr_env) if lr_env else 5e-5
+        wd_env = (os.environ.get("THESIS_TRAINER_WEIGHT_DECAY") or "").strip()
+        weight_decay = float(wd_env) if wd_env else 0.0
         colab_kwargs = {
             "output_dir": out_dir,
             "num_train_epochs": num_train_epochs,
             "fp16": use_fp16,
             "learning_rate": learning_rate,
-            "weight_decay": 0.01,
+            "weight_decay": weight_decay,
         }
         sig = inspect.signature(TrainingArguments.__init__)
-        if disk_minimal and multilingual:
-            # Small-data multilingual: eval each epoch, keep best F1 in /tmp (not Drive).
+        if disk_minimal and best_f1_ckpt:
+            # Optional for any model: eval each epoch + best checkpoint in /tmp (slower).
             colab_kwargs.update(
                 {
                     "save_strategy": "epoch",
@@ -228,16 +219,27 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     elif "tokenizer" in trainer_signature.parameters:
         trainer_kwargs["tokenizer"] = tokenizer
 
-    use_class_weights = multilingual or (
-        (os.environ.get("THESIS_BALANCED_CLASS_WEIGHTS") or "").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
+    use_class_weights = (os.environ.get("THESIS_BALANCED_CLASS_WEIGHTS") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     class_weights = (
         _class_weights_from_dataset(ds_train, len(label_list)) if use_class_weights else None
     )
     trainer_cls = WeightedTokenClassificationTrainer if class_weights is not None else Trainer
     trainer = trainer_cls(class_weights=class_weights, **trainer_kwargs)
-    
+
+    if is_colab and num_train_epochs > 0 and (os.environ.get("THESIS_DEBUG") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        eval_mode = getattr(training_args, "eval_strategy", None) or getattr(
+            training_args, "evaluation_strategy", "?"
+        )
+        print(
+            f"[Colab Trainer] epochs={num_train_epochs} lr={training_args.learning_rate} "
+            f"fp16={getattr(training_args, 'fp16', '?')} eval={eval_mode} "
+            f"class_weights={'on' if class_weights is not None else 'off'}"
+        )
+
     # Train the model
     if num_train_epochs > 0.0:
         from core.model_cleanup import use_disk_minimal_colab_training

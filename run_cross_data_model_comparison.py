@@ -115,6 +115,23 @@ Environment Variables
     Base artifact mode: ``auto`` / ``reuse`` / ``retrain``.
 ``THESIS_DEBUG``
     Set to ``1`` for verbose subprocess output.
+``THESIS_NUM_EPOCHS``
+    Exp01 training epochs for **every** model. Default **3** when using
+    ``run_cross_data_model_comparison.py`` (fair profile; matches completed DictaBERT/BEREL pilot).
+    Does **not** change Exp04 unless you also set ``THESIS_EXP04_EPOCHS`` (default **10**).
+``THESIS_LEARNING_RATE``
+    Exp01 learning rate for all models (default **5e-5** in fair profile).
+``THESIS_TRAINER_WEIGHT_DECAY``
+    Exp01 weight decay (default **0** in fair profile).
+``THESIS_TRAINER_FP16``
+    Exp01 mixed precision on Colab (default **1**).
+``THESIS_BALANCED_CLASS_WEIGHTS``
+    If ``1``, use inverse-frequency token class weights in Exp01 for **all** models.
+``THESIS_TRAINER_BEST_F1_CHECKPOINT``
+    If ``1`` on Colab, evaluate every epoch and reload the best-F1 weights from ``/tmp`` (slower).
+``THESIS_EXP04_EPOCHS``, ``THESIS_EXP04_TRAIN_BATCH``, etc.
+    Exp04 cascaded training; see ``core/auc_cascaded_pipeline.py`` and
+    ``cross_comparison_fair_training_overview.md``.
 ``THESIS_CSV_ENCODING``
     Force CSV decode (e.g. ``utf-8``, ``cp1255``) when auto-detection is wrong.
 ``THESIS_SKIP_HEBREW_TEXT_VALIDATION``
@@ -381,6 +398,15 @@ def _apply_run_layout(
 
     manifest_path = COMPARISON_DIR / "run_manifest.json"
     try:
+        from core.training_defaults import snapshot_training_hyperparameters
+
+        manifest["training_hyperparameters"] = snapshot_training_hyperparameters()
+        from core.training_defaults import EXP01_PROFILE_ENV, EXP04_PROFILE_ENV
+
+        manifest["training_env_effective"] = {
+            k: os.environ.get(k, "")
+            for k in {**EXP01_PROFILE_ENV, **EXP04_PROFILE_ENV}
+        }
         manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -2156,6 +2182,9 @@ def run_comparison(
     """
     from common import configure_network_environment
     configure_network_environment()
+    from core.training_defaults import apply_fair_comparison_training_defaults
+
+    _fair = apply_fair_comparison_training_defaults()
 
     if subset_sentences is not None and subset_sentences > 0 and (exp07_source or "auto").strip().lower() == "saved":
         raise ValueError(
@@ -2167,6 +2196,13 @@ def run_comparison(
         output_dir=output_dir,
         subset_sentences=subset_sentences,
         subset_seed=subset_seed,
+    )
+    _log(
+        "Fair training defaults: "
+        f"Exp01 epochs={_fair.get('THESIS_NUM_EPOCHS')} lr={_fair.get('THESIS_LEARNING_RATE')} "
+        f"wd={_fair.get('THESIS_TRAINER_WEIGHT_DECAY')} | "
+        f"Exp04 epochs={_fair.get('THESIS_EXP04_EPOCHS')} "
+        "(cross_comparison_fair_training_overview.md)"
     )
 
     base_mode = (base_mode or "auto").strip().lower()

@@ -125,6 +125,14 @@ python run_cross_data_model_comparison.py \
   --consolidated-error-analysis all
 ```
 
+**Fair training (all models):** The cross-comparison runner applies one profile automatically
+(`core/training_defaults.py`). Full tables, Colab snippets, and resume instructions:
+**[cross_comparison_fair_training_overview.md](cross_comparison_fair_training_overview.md)**.
+
+Reference (matches completed DictaBERT/BEREL 150-sent Colab run): Exp01 **3 epochs**, **5e-5** LR,
+fp16 on, weight decay **0**; Exp04 **10 epochs** (encoder **2e-5**). Re-run XLM-R/mT5 with wrong
+checkpoint rows cleared if they used older multilingual-only settings.
+
 Artifacts for the pilot: `{output-dir}/data/ner_dataset_150_seed42.csv`, `{output-dir}/exp07/splits/`, `{output-dir}/run_manifest.json`, plus `cross_comparison_*.xlsx/json` and consolidated error-analysis workbooks. The full-corpus run does **not** overwrite `outputs/exp07/splits/` when the pilot uses its own `--output-dir` and subset flags.
 
 ---
