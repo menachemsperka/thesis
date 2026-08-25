@@ -19,7 +19,11 @@ def encode_words_for_ner(tokenizer, words: list[str], *, max_length: int = 512, 
         kwargs["return_tensors"] = return_tensors
     tok_name = type(tokenizer).__name__.lower()
     if "roberta" in tok_name or "xlm" in tok_name:
-        kwargs["add_prefix_space"] = True
+        # Fast tokenizers (XLM-RoBERTa on Colab): set property, do not pass to __call__.
+        if hasattr(tokenizer, "add_prefix_space"):
+            tokenizer.add_prefix_space = True
+        elif not getattr(tokenizer, "is_fast", False):
+            kwargs["add_prefix_space"] = True
     return tokenizer(words, **kwargs)
 
 
