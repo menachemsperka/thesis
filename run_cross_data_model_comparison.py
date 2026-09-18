@@ -30,11 +30,13 @@ Ready experiments:
 * ``06_entropy_ready``
 * ``06_learned_ready``
 * ``06_ensemble_ready``
-* ``06_svm_ready``
+* ``06_svm_ready`` — linear SVM router (``LinearSVC``)
+* ``06_svm_kernel_ready``, ``06_nb_ready``, ``06_lr_ready``, ``06_rf_ready``, ``06_mlp_ready``
 * ``10_regular`` — BERT-CRF regular NER (train or reuse)
 * ``10_cascade`` — Cascaded pipeline with CRF + Step-3 consistency (train or reuse)
 * ``10_fusion_ready`` — Confidence fusion of Exp10 CRF outputs (``regular_prob`` vs ``cascade_prob``; overview §11.2)
-* ``10_svm_ready`` — SVM router fusion on Exp10 CRF outputs (LinearSVC; overview §12)
+* ``10_svm_ready`` — linear SVM router on Exp10 CRF outputs (overview §12)
+* ``10_svm_kernel_ready``, ``10_nb_ready``, ``10_lr_ready``, ``10_rf_ready``, ``10_mlp_ready``
 
 Outputs
 -------
@@ -67,7 +69,7 @@ Run ready consistency + all ready fusion variants without retraining:
 
 ::
 
-    python run_cross_data_model_comparison.py --experiments 05_ready,06_ready,06_normalized_ready,06_entropy_ready,06_learned_ready,06_ensemble_ready,06_svm_ready --models dictabert,berel --base-mode reuse
+    python run_cross_data_model_comparison.py --experiments 05_ready,06_ready,06_normalized_ready,06_entropy_ready,06_learned_ready,06_ensemble_ready,06_svm_ready,06_svm_kernel_ready,06_nb_ready,06_lr_ready,06_rf_ready,06_mlp_ready --models dictabert,berel --base-mode reuse
 
 Run Experiment 10 (BERT-CRF + cascaded CRF fusion):
 
@@ -250,11 +252,21 @@ EXP_NAMES: dict[str, str] = {
     "06_entropy_ready": "Fusion Entropy (Ready)",
     "06_learned_ready": "Fusion Learned Weights (Ready)",
     "06_ensemble_ready": "Fusion Ensemble Rules (Ready)",
-    "06_svm_ready": "SVM Router Fusion (Ready)",
+    "06_svm_ready": "Linear SVM Router Fusion (Ready)",
+    "06_svm_kernel_ready": "Kernel SVM (RBF) Router Fusion (Ready)",
+    "06_nb_ready": "Naive Bayes Router Fusion (Ready)",
+    "06_lr_ready": "Logistic Regression Router Fusion (Ready)",
+    "06_rf_ready": "Random Forest Router Fusion (Ready)",
+    "06_mlp_ready": "MLP Router Fusion (Ready)",
     "10_regular": "Regular NER (BERT-CRF)",
     "10_cascade": "Cascaded Pipeline (CRF + Consistency)",
     "10_fusion_ready": "Fusion Regular-CRF + Cascaded-CRF (Ready)",
-    "10_svm_ready": "SVM Router Fusion CRF (Ready)",
+    "10_svm_ready": "Linear SVM Router Fusion CRF (Ready)",
+    "10_svm_kernel_ready": "Kernel SVM (RBF) Router Fusion CRF (Ready)",
+    "10_nb_ready": "Naive Bayes Router Fusion CRF (Ready)",
+    "10_lr_ready": "Logistic Regression Router Fusion CRF (Ready)",
+    "10_rf_ready": "Random Forest Router Fusion CRF (Ready)",
+    "10_mlp_ready": "MLP Router Fusion CRF (Ready)",
 }
 
 EXP_SCRIPTS: dict[str, str] = {
@@ -269,10 +281,20 @@ EXP_SCRIPTS: dict[str, str] = {
     "06_learned_ready": "experiment_06_fusion_learned_weights_ready",
     "06_ensemble_ready": "experiment_06_fusion_ensemble_rules_ready",
     "06_svm_ready": "experiment_06_fusion_svm_ready",
+    "06_svm_kernel_ready": "experiment_06_fusion_svm_kernel_ready",
+    "06_nb_ready": "experiment_06_fusion_nb_ready",
+    "06_lr_ready": "experiment_06_fusion_lr_ready",
+    "06_rf_ready": "experiment_06_fusion_rf_ready",
+    "06_mlp_ready": "experiment_06_fusion_mlp_ready",
     "10_regular": "experiment_10_regular_ner_crf",
     "10_cascade": "experiment_10_cascaded_pipeline_crf",
     "10_fusion_ready": "experiment_10_fusion_crf_ready",
     "10_svm_ready": "experiment_10_fusion_svm_ready",
+    "10_svm_kernel_ready": "experiment_10_fusion_svm_kernel_ready",
+    "10_nb_ready": "experiment_10_fusion_nb_ready",
+    "10_lr_ready": "experiment_10_fusion_lr_ready",
+    "10_rf_ready": "experiment_10_fusion_rf_ready",
+    "10_mlp_ready": "experiment_10_fusion_mlp_ready",
     "07": "experiment_07_sentence_split_strategy",
     "08": "experiment_08_llm_augmentation",
 }
@@ -286,9 +308,37 @@ READY_DEPENDENT_EXP_IDS: set[str] = {
     "06_learned_ready",
     "06_ensemble_ready",
     "06_svm_ready",
+    "06_svm_kernel_ready",
+    "06_nb_ready",
+    "06_lr_ready",
+    "06_rf_ready",
+    "06_mlp_ready",
 }
 
-EXP10_READY_DEPENDENT_EXP_IDS: set[str] = {"10_fusion_ready", "10_svm_ready"}
+EXP10_READY_DEPENDENT_EXP_IDS: set[str] = {
+    "10_fusion_ready",
+    "10_svm_ready",
+    "10_svm_kernel_ready",
+    "10_nb_ready",
+    "10_lr_ready",
+    "10_rf_ready",
+    "10_mlp_ready",
+}
+
+READY_ML_ROUTER_EXP_IDS: set[str] = {
+    "06_svm_ready",
+    "06_svm_kernel_ready",
+    "06_nb_ready",
+    "06_lr_ready",
+    "06_rf_ready",
+    "06_mlp_ready",
+    "10_svm_ready",
+    "10_svm_kernel_ready",
+    "10_nb_ready",
+    "10_lr_ready",
+    "10_rf_ready",
+    "10_mlp_ready",
+}
 
 # Experiments that require expensive GPU training (vs cheap inference).
 TRAINING_EXP_IDS: set[str] = {"01", "03", "04", "10_regular", "10_cascade"}
@@ -1284,7 +1334,17 @@ def _consolidate_error_analysis_workbooks(
 
 def _consolidate_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Path | None:
     """Merge per-run Exp10 error-analysis workbooks into one cross-comparison file."""
-    exp10_prefixes = ("exp10_regular", "exp10_cascade", "exp10_fusion_ready", "exp10_svm_ready")
+    exp10_prefixes = (
+        "exp10_regular",
+        "exp10_cascade",
+        "exp10_fusion_ready",
+        "exp10_svm_ready",
+        "exp10_svm_kernel_ready",
+        "exp10_nb_ready",
+        "exp10_lr_ready",
+        "exp10_rf_ready",
+        "exp10_mlp_ready",
+    )
     return _consolidate_error_analysis_workbooks(
         rows,
         ts,
@@ -2663,7 +2723,7 @@ def run_comparison(
                     _log(f"  F1={_fmt(metrics.get('f1'))} ({elapsed:.1f}s)")
 
                     if not str(metrics.get("status", "")).startswith("error"):
-                        if is_training or exp_id in {"06_svm_ready", "10_svm_ready"}:
+                        if is_training or exp_id in READY_ML_ROUTER_EXP_IDS:
                             try:
                                 from core.model_cleanup import cleanup_training_artifacts_if_enabled
 

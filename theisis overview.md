@@ -37,7 +37,14 @@ The pipeline compares five **core** experiments (01–06 ready track):
 | `04` | AUC Cascaded Pipeline | NER is decomposed into entity detection, BIO position, and entity type prediction. |
 | `05_ready` | Cascaded B/I Consistency | Post-processes `04` outputs to repair inconsistent `B-X` followed by `I-Y` predictions. |
 | `06_ready` | Confidence Fusion | Combines `01` and `04`; if they disagree, compares per-source scalar confidence (`regular_prob` vs `cascade_prob`; see **§11.2**). |
-| `06_svm_ready` | SVM Router Fusion | Combines `01` and `04`; a **LinearSVC** routes disagreements using margins and label parts (**§12**); falls back to confidence fusion if training fails. |
+| `06_svm_ready` | Linear SVM Router Fusion | Combines `01` and `04`; **LinearSVC** routes disagreements (**§12.3**). |
+| `06_svm_kernel_ready` | Kernel SVM Router Fusion | Same features/targets; **RBF `SVC`** (**§12.5**). |
+| `06_nb_ready` | Naive Bayes Router Fusion | **GaussianNB** router (**§12B.1**; interpret with caution). |
+| `06_lr_ready` | Logistic Regression Router Fusion | **LogisticRegression** router (**§12B.2**). |
+| `06_rf_ready` | Random Forest Router Fusion | **RandomForestClassifier** router (**§12B.3**). |
+| `06_mlp_ready` | MLP Router Fusion | **MLPClassifier** router (**§12B.4**). |
+
+All six ML router IDs share the same ready protocol: no NER retraining; train the meta-classifier on unambiguous disagreement tokens; fallback to §11.3 if training fails. Implementation: `experiments/fusion_router_ready_common.py`.
 
 **Optional extension — Experiment 10 (BERT-CRF track):** same cross-comparison runner, separate base cache, adds CRF decoding and CRF fusion (see **Section 12A** and `experiments/experiment_10_README.md`).
 
@@ -46,7 +53,12 @@ The pipeline compares five **core** experiments (01–06 ready track):
 | `10_regular` | Regular BERT-CRF | Exp01-style single pass, but emissions + **linear-chain CRF** (Viterbi decode); **O-bias = 6**. |
 | `10_cascade` | Cascaded + CRF | Exp04-style three heads **plus** full-tag CRF head; Step-3 **B/I consistency** after decode. |
 | `10_fusion_ready` | CRF confidence fusion | Fuses `10_regular` and `10_cascade` ready Excel outputs (no retraining). |
-| `10_svm_ready` | CRF SVM router | Same router idea as `06_svm_ready` on CRF sources. |
+| `10_svm_ready` | CRF linear SVM router | Same as `06_svm_ready` on CRF sources (**§12A.4**). |
+| `10_svm_kernel_ready` | CRF kernel SVM router | RBF `SVC` on CRF disagreements (**§12.5**). |
+| `10_nb_ready` | CRF Naive Bayes router | GaussianNB (**§12B.1**). |
+| `10_lr_ready` | CRF logistic regression router | (**§12B.2**). |
+| `10_rf_ready` | CRF random forest router | (**§12B.3**). |
+| `10_mlp_ready` | CRF MLP router | (**§12B.4**). |
 
 The selected models are:
 
@@ -1071,9 +1083,9 @@ This is a simple but scientifically meaningful ensemble rule. It assumes that co
 
 ---
 
-## 12. Experiment 06_svm_ready: SVM Router Fusion
+## 12. ML Router Fusion (Ready): Shared Protocol
 
-Experiment `06_svm_ready` uses a learned router instead of a fixed confidence rule.
+Experiments `06_svm_ready`, `06_svm_kernel_ready`, `06_nb_ready`, `06_lr_ready`, `06_rf_ready`, and `06_mlp_ready` (and Exp10 analogues `10_*`) use a **learned meta-classifier** instead of a fixed confidence rule.
 
 The central idea is:
 
@@ -1087,7 +1099,7 @@ $$
 \hat{y}_i^{reg} \neq \hat{y}_i^{cas}.
 $$
 
-The SVM is trained only on disagreement tokens where exactly one source is correct.
+The router is trained only on disagreement tokens where exactly one source is correct.
 
 Define:
 
@@ -1117,9 +1129,21 @@ Ambiguous cases are discarded:
 
 ### 12.2 Router Features
 
-For each disagreement token, the feature vector includes numeric and categorical features. **Entropy is exported in Exp01 / derived for cascade but is not an SVM input** in the ready implementation (`experiment_06_fusion_svm_ready.py`).
+The disagreement router does **not** see the raw token string, sentence id, or gold label. It sees only **calibrated-style scores and predicted label parts** from Exp01 (regular) and Exp04 (cascade) on tokens where the two systems were successfully aligned (`merge_regular_cascade` inner join on `(sentence_id, token_idx)`).
 
-Numeric features (column names in code):
+Feature definitions are centralized in `experiments/fusion_ready_sources.py` as `FUSION_ROUTER_NUMERIC_FEATURES` and `FUSION_ROUTER_CATEGORICAL_FEATURES` (legacy aliases `SVM_ROUTER_*`). All ready ML routers use `experiments/fusion_router_ready_common.py` with the same schema.
+
+**When features are used:**
+
+- **Training:** only rows with `disagree = True` **and** a non-ambiguous router target (§12.1).
+- **Routing at fusion time:** the fitted pipeline’s `predict` is called on **all** disagreement rows (same feature columns).
+- **Agreement rows:** no router features are needed; the fused label is the shared prediction.
+
+**Entropy is exported** (`regular_entropy`, `cascade_entropy`) for analysis and other fusion variants, but **is not a router input** in the ready ML implementations.
+
+#### 12.2.1 Numeric features (7 columns → `StandardScaler`)
+
+After merge, seven scalar columns form $\phi_i^{num}$. Each is z-scored **on the router training matrix only** (sklearn `StandardScaler` inside the pipeline fit on usable disagreement tokens).
 
 $$
 \phi_i^{num} = [
@@ -1133,40 +1157,85 @@ $$
 ].
 $$
 
-| Code column | Role |
-|---|---|
-| `regular_prob` | $p_i^{reg}$ (§11.2.1) |
-| `cascade_prob` | $p_i^{cas}$ (§11.2.2) |
-| `regular_margin` | top-two softmax gap (Exp01 / Exp10 regular sheet) |
-| `cascade_margin` | $2|p_i^{cas}-0.5|$ (loader-derived) |
-| `prob_diff` | $p_i^{reg}-p_i^{cas}$ |
-| `abs_prob_diff` | $|p_i^{reg}-p_i^{cas}|$ |
-| `max_prob` | $\max(p_i^{reg},p_i^{cas})$ |
+| Code column | Definition | Source / computation | Role for routing |
+|---|---|---|---|
+| `regular_prob` | $p_i^{reg}$ | Exp01 `token_predictions.prob` (or Exp10 regular sheet); §11.2.1 | How strongly the **direct** model backs its tag (softmax max or emission prob of decoded CRF tag). |
+| `cascade_prob` | $p_i^{cas}$ | Built in `load_cascade_from_exp04`: $(1-p^{entity})$ if `pred_bio=O`, else $p^{entity}\cdot p^{bio}$; §11.2.2 | How strongly the **cascaded** pipeline backs its composed tag. |
+| `regular_margin` | $p_{i,(1)}-p_{i,(2)}$ | Exp01 export: gap between top two softmax probabilities (`experiment_01_regular_ner.py`); legacy sheets default `0.0` | Separates “clear winner” vs “almost tied” on the regular side even when $p_i^{reg}$ is moderate. |
+| `cascade_margin` | $2|p_i^{cas}-0.5|$ | Loader after $p_i^{cas}$ is fixed (`fusion_ready_sources.py`) | Treats cascaded confidence as a Bernoulli-style score in $[0,1]$; large value ⇒ far from chance. |
+| `prob_diff` | $p_i^{reg}-p_i^{cas}$ | `merged["prob_diff"]` | Signed advantage of regular over cascade (same signal as §11.3, but the SVM can combine it with non-confidence cues). |
+| `abs_prob_diff` | $|p_i^{reg}-p_i^{cas}|$ | `abs(prob_diff)` | Magnitude of confidence gap only (symmetric; useful when direction is encoded elsewhere). |
+| `max_prob` | $\max(p_i^{reg},p_i^{cas})$ | Row-wise max of the two confidences | “Overall peaking” — both models very confident vs both cautious, independent of which side wins. |
 
-Categorical features (one-hot encoded):
+Together, these let a **linear** router learn patterns such as “cascade is right when entity×bio product is high **and** regular margin is low **and** the two predicted entity types differ,” which pure §11.3 comparison cannot express.
+
+#### 12.2.2 Categorical features (4 columns → `OneHotEncoder`)
+
+Each full predicted label string (e.g. `B-PER`, `I-LOC`, `O`) is split into a **boundary** part and an **entity-type** part before encoding:
+
+$$
+\text{split}(y) =
+\begin{cases}
+(\texttt{O}, \texttt{None}), & y = \texttt{O},\\
+(B\text{ or }I, \text{type}), & y = \texttt{B-type} \text{ or } \texttt{I-type}.
+\end{cases}
+$$
+
+Implementation: `_split_label` in `merge_regular_cascade` for regular; cascade `cascade_bio` / `cascade_etype` come from Exp04 `pred_bio` / `pred_etype` (`etype` filled as `None` when absent).
+
+| Code column | Meaning | Typical values |
+|---|---|---|
+| `regular_bio` | BIO prefix from $\hat{y}_i^{reg}$ | `O`, `B`, `I` |
+| `regular_etype` | Entity type from $\hat{y}_i^{reg}$ | `PER`, `LOC`, `ORG`, … or `None` for `O` |
+| `cascade_bio` | BIO prefix from $\hat{y}_i^{cas}$ | `O`, `B`, `I` |
+| `cascade_etype` | Entity type from $\hat{y}_i^{cas}$ | same type inventory or `None` |
 
 $$
 \phi_i^{cat} = [
-BIO_i^{reg},
-TYPE_i^{reg},
-BIO_i^{cas},
-TYPE_i^{cas}
+ \text{BIO}_i^{reg},
+ \text{TYPE}_i^{reg},
+ \text{BIO}_i^{cas},
+ \text{TYPE}_i^{cas}
 ].
 $$
 
-Code columns: `regular_bio`, `regular_etype`, `cascade_bio`, `cascade_etype` (parsed from full BIO-type labels).
+(The four fields above are `regular_bio`, `regular_etype`, `cascade_bio`, `cascade_etype`.)
 
-The full router feature vector is:
+**Encoding:** `OneHotEncoder(handle_unknown="ignore")` on the four string columns. Each distinct training value becomes a binary indicator; at prediction time, **unseen** category levels (rare types in eval) contribute **no** active bit rather than crashing the router. There is **no** shared embedding and **no** manual feature cross — any interaction with numeric scores must be learned through the linear SVM weights on the concatenated one-hot and scaled numeric block.
+
+**Why categoricals matter:** on disagreements, models often conflict on **structure** (e.g. `O` vs `B-PER`, or `B-PER` vs `B-LOC`) while confidences are similar. Label-part features tell the router *what kind* of disagreement it is, not only *how confident* each side is.
+
+#### 12.2.3 Full vector and sklearn pipeline
+
+The classifier input is the horizontally concatenated preprocessed blocks:
 
 $$
-\phi_i = [\phi_i^{num}, \phi_i^{cat}].
+\phi_i = [\phi_i^{num,\ \text{scaled}},\ \phi_i^{cat,\ \text{one-hot}}].
 $$
 
-Numeric block: `StandardScaler`. Categorical block: `OneHotEncoder(handle_unknown="ignore")`, composed via `ColumnTransformer`.
+```text
+ColumnTransformer(
+  ("num", StandardScaler(), 7 numeric columns),
+  ("cat", OneHotEncoder(handle_unknown="ignore"), 4 categorical columns),
+)
+→ LinearSVC(C=1.0, class_weight="balanced", ...)
+```
 
-### 12.3 Linear SVM — Objective and Hyperparameters
+Constants: `FUSION_ROUTER_*` feature tuples and per-classifier `ROUTER_*_PARAMS` in `fusion_ready_sources.py`.
 
-The router is a linear support vector classifier. In simplified binary form, it learns:
+#### 12.2.4 Features deliberately excluded from the router
+
+| Not used | Reason |
+|---|---|
+| `regular_entropy`, `cascade_entropy` | Available in workbooks; omitted to keep the router focused on confidence level, margin, and label structure (entropy variants are separate fusion experiments). |
+| `entity_prob`, `bio_prob` (raw cascade heads) | Already summarized into $p_i^{cas}$ and `cascade_margin`; raw heads would be redundant unless type-specific calibration differed. |
+| Token text, `sentence_id`, `token_idx` | Would encourage memorization / spurious correlations; router is token-local and model-agnostic. |
+| Gold `true_label` | Used only to define training targets (§12.1), never as an input feature at inference. |
+| Fused or third-model predictions | Router chooses between **existing** Exp01 vs Exp04 outputs only. |
+
+### 12.3 Linear SVM (`06_svm_ready`) — Objective and Hyperparameters
+
+Experiment `06_svm_ready` uses a **linear** support vector classifier (`sklearn.svm.LinearSVC`), not a kernel SVM. In simplified binary form, it learns:
 
 $$
 f(\phi_i) = w^T\phi_i + b.
@@ -1228,9 +1297,55 @@ $$
 
 If the router cannot be trained, for example because there are not enough usable disagreement examples, the method falls back to the confidence fusion rule.
 
-Important limitation:
+Important limitation (all ready ML routers):
 
-> The ready SVM variant trains and evaluates the router on the same ready output set. It is useful as an exploratory fusion architecture, but a stricter estimate would require a separate router train/test split.
+> The ready variants train and evaluate the router on the same ready output set. They are useful as exploratory fusion architectures, but a stricter estimate would require a separate router train/test split (see full-training `experiment_06_fusion_svm.py` for NER + router split protocol).
+
+### 12.5 Kernel SVM (`06_svm_kernel_ready`)
+
+Uses `sklearn.svm.SVC` with **`kernel="rbf"`**, `gamma="scale"`, `C=1.0`, and `class_weight="balanced"` (`ROUTER_SVC_RBF_PARAMS`). Features, targets, agreement passthrough, and §11.3 fallback match §12.1–§12.4.
+
+**Linear vs kernel:** `LinearSVC` learns a single hyperplane in the preprocessed feature space (fast, interpretable weights). RBF `SVC` can represent **non-linear** boundaries between “pick regular” and “pick cascade,” at the cost of higher compute and less transparent decision rules. Both are trained on the **same** disagreement subset.
+
+### 12B. Other Classical ML Routers (Ready)
+
+All variants below reuse §12.1 targets, §12.2 features, sklearn `Pipeline` preprocessing (`StandardScaler` + `OneHotEncoder`), and the fusion rule in §12.4. Hyperparameters live in `fusion_ready_sources.py`.
+
+#### 12B.1 Naive Bayes (`06_nb_ready`) — `GaussianNB`
+
+**Method:** `sklearn.naive_bayes.GaussianNB` with default parameters on the same scaled one-hot feature matrix as the SVM routers.
+
+**Reservation (important for the thesis):** Naive Bayes assumes **conditional independence** of features given the class. The router inputs violate this assumption in two ways:
+
+1. **Correlated numerics:** `regular_prob`, `cascade_prob`, `prob_diff`, `abs_prob_diff`, and `max_prob` are deterministically related; margins are also correlated with probabilities.
+2. **One-hot categoricals:** BIO/type indicators are sparse and co-occur with numeric confidence patterns in structured ways.
+
+Gaussian NB can still be run as a **baseline** for completeness, but it is **not theoretically well matched** to this feature design. Treat its F1 as empirical only; prefer logistic regression, linear/kernel SVM, random forest, or MLP when interpreting which meta-learner fits the routing task.
+
+#### 12B.2 Logistic Regression (`06_lr_ready`)
+
+`LogisticRegression(C=1.0, class_weight="balanced", max_iter=5000, random_state=42)`. A linear probabilistic classifier on the same $\phi_i$ as §12.3; often a strong, calibrated baseline for binary routing.
+
+#### 12B.3 Random Forest (`06_rf_ready`)
+
+`RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)`. Non-linear ensemble; handles feature interactions (e.g. confidence gap × BIO conflict) without manual crosses; less interpretable than linear models.
+
+#### 12B.4 MLP (`06_mlp_ready`)
+
+`MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=1000, early_stopping=True, random_state=42)`. Small feed-forward network on the preprocessed features; can capture non-linear routing rules but may overfit when usable disagreement tokens are scarce (same limitation as all ready routers).
+
+#### 12B.5 Code map
+
+| Runner ID | Module |
+|---|---|
+| `06_svm_ready` | `experiment_06_fusion_svm_ready.py` |
+| `06_svm_kernel_ready` | `experiment_06_fusion_svm_kernel_ready.py` |
+| `06_nb_ready` | `experiment_06_fusion_nb_ready.py` |
+| `06_lr_ready` | `experiment_06_fusion_lr_ready.py` |
+| `06_rf_ready` | `experiment_06_fusion_rf_ready.py` |
+| `06_mlp_ready` | `experiment_06_fusion_mlp_ready.py` |
+
+Shared logic: `fusion_router_ready_common.py`.
 
 ---
 
@@ -1305,9 +1420,9 @@ $$
 \end{cases}
 $$
 
-### 12A.4 Experiment 10_svm_ready — SVM Router on CRF Disagreements
+### 12A.4 Experiment 10 ML routers on CRF disagreements
 
-Same feature columns and **LinearSVC hyperparameters** as §12.3 (`experiment_10_fusion_svm_ready.py`), applied to **CRF** disagreement tokens. Router targets:
+Same **router feature schema** (§12.2.1–§12.2.3) and **classifier choices** as §12.3–§12B (`10_svm_ready`, `10_svm_kernel_ready`, `10_nb_ready`, `10_lr_ready`, `10_rf_ready`, `10_mlp_ready`), applied to **CRF** disagreement tokens. Only $p_i^{reg}$ definition differs (§11.2.1 emission on Viterbi tag); all seven numeric and four categorical columns are built by the same merge loader. Router targets:
 
 $$
 z_i \in \{regular, cascade\}
@@ -1903,20 +2018,4 @@ $$
 
 ## 21. Short Plain-English Summary
 
-This pipeline is a rigorous experimental system for Hebrew NER. It tests **six** transformer encoders (four Hebrew-focused and two multilingual baselines) across multiple train/evaluation split strategies and augmented data variants. It compares a direct NER model, a cascaded three-step model, a structural consistency repair method, a confidence-based fusion method, and an SVM-based fusion method. Every comparison is repeated across 20 paired seeds so that improvements can be tested statistically rather than judged from a single lucky run.
-
-The scientific architecture is therefore:
-
-$$
-\text{Data design}
-\rightarrow
-\text{Model training}
-\rightarrow
-\text{Cascaded decomposition}
-\rightarrow
-\text{Post-processing/fusion}
-\rightarrow
-\text{Entity-level evaluation}
-\rightarrow
-\text{Paired statistical inference}.
-$$
+This pipeline is a rigorous experimental system for Hebrew NER. It tests **six** transformer encoders (four Hebrew-focused and two multilingual baselines) across multiple train/evaluation split strategies and augmented data variants. It compares a direct NER model, a cascaded three-step model, a structural consistency repair method, a confidence-based fusion method, and an SVM-based fusion method. Every comparison is repeated across 20 paired seeds so that improvements can

@@ -55,6 +55,11 @@ DEFAULT_EXPERIMENT_IDS = [
     "exp06_learned_ready",
     "exp06_ensemble_ready",
     "exp06_svm_ready",
+    "exp06_svm_kernel_ready",
+    "exp06_nb_ready",
+    "exp06_lr_ready",
+    "exp06_rf_ready",
+    "exp06_mlp_ready",
 ]
 
 

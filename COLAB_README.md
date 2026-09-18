@@ -94,6 +94,23 @@ Finally, you can run your experiments directly through shell commands (by prefix
 !python run_all_experiments.py
 ```
 
+**Ready ML fusion routers (no NER retraining — needs cached Exp01 + Exp04 outputs):**
+```python
+import os
+os.environ["THESIS_RUN_ENV"] = "colab"
+os.environ["WANDB_DISABLED"] = "true"
+
+!python run_cross_data_model_comparison.py \
+  --experiments 06_svm_ready,06_svm_kernel_ready,06_nb_ready,06_lr_ready,06_rf_ready,06_mlp_ready \
+  --models dictabert,berel \
+  --base-mode reuse
+```
+
+If Exp01/Exp04 base cache is missing, warm it first:
+```python
+!python run_cross_data_model_comparison.py --experiments 01,04 --models dictabert,berel --base-mode auto
+```
+
 **To run interactively in a Python cell:**
 ```python
 # Assuming you want to run experiment #1

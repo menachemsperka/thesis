@@ -45,10 +45,10 @@ from common import write_result_excel, write_result_json
 
 
 # ---------------------------------------------------------------------------
-# SVM disagreement router (06_svm_ready / 10_svm_ready) — see theisis overview.md §12
+# Disagreement router features (06/10 *_ready ML routers) — theisis overview.md §12–§12B
 # ---------------------------------------------------------------------------
 
-SVM_ROUTER_NUMERIC_FEATURES: tuple[str, ...] = (
+FUSION_ROUTER_NUMERIC_FEATURES: tuple[str, ...] = (
     "regular_prob",
     "cascade_prob",
     "regular_margin",
@@ -58,19 +58,56 @@ SVM_ROUTER_NUMERIC_FEATURES: tuple[str, ...] = (
     "max_prob",
 )
 
-SVM_ROUTER_CATEGORICAL_FEATURES: tuple[str, ...] = (
+FUSION_ROUTER_CATEGORICAL_FEATURES: tuple[str, ...] = (
     "regular_bio",
     "regular_etype",
     "cascade_bio",
     "cascade_etype",
 )
 
-SVM_LINEAR_SVC_PARAMS: dict = {
+ROUTER_LINEAR_SVC_PARAMS: dict = {
     "C": 1.0,
     "class_weight": "balanced",
     "random_state": 42,
     "max_iter": 5000,
 }
+
+ROUTER_SVC_RBF_PARAMS: dict = {
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": "scale",
+    "class_weight": "balanced",
+    "random_state": 42,
+    "probability": False,
+}
+
+ROUTER_GAUSSIAN_NB_PARAMS: dict = {}
+
+ROUTER_LOGISTIC_REGRESSION_PARAMS: dict = {
+    "C": 1.0,
+    "class_weight": "balanced",
+    "random_state": 42,
+    "max_iter": 5000,
+}
+
+ROUTER_RANDOM_FOREST_PARAMS: dict = {
+    "n_estimators": 100,
+    "class_weight": "balanced",
+    "random_state": 42,
+    "n_jobs": -1,
+}
+
+ROUTER_MLP_PARAMS: dict = {
+    "hidden_layer_sizes": (64, 32),
+    "max_iter": 1000,
+    "random_state": 42,
+    "early_stopping": True,
+}
+
+# Backward-compatible aliases (legacy imports / docs)
+SVM_ROUTER_NUMERIC_FEATURES = FUSION_ROUTER_NUMERIC_FEATURES
+SVM_ROUTER_CATEGORICAL_FEATURES = FUSION_ROUTER_CATEGORICAL_FEATURES
+SVM_LINEAR_SVC_PARAMS = ROUTER_LINEAR_SVC_PARAMS
 
 
 # ---------------------------------------------------------------------------
@@ -832,7 +869,9 @@ def run_ready_fusion(
     ]
     # Include any extra columns the strategy added
     for col in merged.columns:
-        if col not in detailed_cols and col.startswith(("calibrated_", "entropy_", "learned_", "svm_")):
+        if col not in detailed_cols and col.startswith(
+            ("calibrated_", "entropy_", "learned_", "svm_", "router_")
+        ):
             detailed_cols.append(col)
     detailed_df = merged[[c for c in detailed_cols if c in merged.columns]]
 
