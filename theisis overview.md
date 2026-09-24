@@ -103,7 +103,7 @@ Two standard cross-comparison profiles share the **same model list** and experim
 | Profile | Corpus | CLI |
 |---|---|---|
 | **Full labeled set** (~300 sentences) | `data/ner_dataset.csv` | Default paths; omit `--subset-sentences`. Use `--output-dir outputs/cross_comparison_full` (recommended) so checkpoints do not mix with pilot runs. |
-| **150-sentence pilot** | Random 150 sentence ids (fixed by `--subset-seed`) | `--subset-sentences 150 --subset-seed 42 --output-dir outputs/cross_comparison_150sent` (splits + subset CSV live under that folder). |
+| **150-sentence pilot** | Random 150 sentence ids (fixed by `--subset-seed`) | `--subset-sentences 150 --subset-seed 42 --output-dir outputs/cross_comparison_150sent` (splits + subset CSV live under that folder). **Full methods for DictaBERT/BEREL + ML routers:** [`thesis_overview_150_sentences_pilot.md`](thesis_overview_150_sentences_pilot.md). |
 
 **Full corpus (all six models, 20 seeds, no augmentation, no CRF):**
 

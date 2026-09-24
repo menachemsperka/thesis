@@ -17,6 +17,10 @@ error_examples: reservoir sample (default 100,000 rows max).
 
 detailed_results: replaced by thesis-style summary tables (overall + per model),
 split by CRF vs non-CRF experiment families.
+
+Thesis method focus (four columns): Regular NER (exp01), Cascade NER (exp04),
+Linear SVM Fusion (exp06_svm_ready), RF Fusion (exp06_rf_ready). Other experiment
+IDs in a cross-comparison run are omitted from consolidated sheets.
 """
 from __future__ import annotations
 
@@ -64,11 +68,50 @@ CANONICAL_MODEL_SHEETS: tuple[tuple[str, str], ...] = (
     ("alephbertgimmel", "AlephBERT-Gimmel"),
 )
 
-SVM_ROUTES = (
+ROUTER_ROUTES = (
     "Agree (no routing needed)",
-    "SVM → Regular",
-    "SVM → Cascade",
+    "Router → Regular",
+    "Router → Cascade",
 )
+
+# Thesis error-analysis focus: direct NER, cascade, linear SVM router, RF router only.
+FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS = frozenset({
+    "exp01",
+    "exp04",
+    "exp06_svm_ready",
+    "exp06_rf_ready",
+    "exp10_regular",
+    "exp10_cascade",
+    "exp10_svm_ready",
+    "exp10_rf_ready",
+})
+
+
+def _in_thesis_error_analysis_focus(experiment_id: str) -> bool:
+    return str(experiment_id or "").strip().lower() in FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS
+
+
+def _method_applies(experiment_id: str, method_name: str) -> bool:
+    """Map each run to at most one comparison column (no duplicate Regular/Cascade from fusion runs)."""
+    e = str(experiment_id or "").strip().lower()
+    if method_name == "Regular NER":
+        return e in ("exp01", "exp10_regular")
+    if method_name == "Cascade NER":
+        return e in ("exp04", "exp10_cascade")
+    if method_name == "Linear SVM Fusion":
+        return e in ("exp06_svm_ready", "exp10_svm_ready")
+    if method_name == "RF Fusion":
+        return e in ("exp06_rf_ready", "exp10_rf_ready")
+    return False
+
+
+def _router_label_for_experiment(experiment_id: str) -> str | None:
+    e = str(experiment_id or "").strip().lower()
+    if e in ("exp06_svm_ready", "exp10_svm_ready"):
+        return "Linear SVM"
+    if e in ("exp06_rf_ready", "exp10_rf_ready"):
+        return "RF"
+    return None
 
 ROUTING_ERROR_TYPES = (
     "correct",
@@ -88,7 +131,8 @@ ERROR_ROW_ORDER = (
 METHOD_SPECS = (
     ("Regular NER", ("regular_pred_label", "pred_label", "predicted_label")),
     ("Cascade NER", ("cascade_pred_label",)),
-    ("SVM Fused", ("fused_pred_label",)),
+    ("Linear SVM Fusion", ("fused_pred_label",)),
+    ("RF Fusion", ("fused_pred_label",)),
 )
 
 
@@ -197,7 +241,7 @@ class _DetailAccumulator:
     # (family, model_scope, method) -> "TRUE → PRED" -> count
     type_confusion: Counter = field(default_factory=Counter)
     tokens_by_slice: Counter = field(default_factory=Counter)
-    # SVM routing: (family, model_scope, route) -> (correct, error)
+    # Linear SVM / RF routers: (family, model_scope, router_label, route, outcome) -> count
     svm_route: Counter = field(default_factory=Counter)
     svm_route_errors: Counter = field(default_factory=Counter)
     # split table: (family, split, aug, method) -> error_type -> count
@@ -239,14 +283,14 @@ def _true_label_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series(["O"] * len(df), index=df.index)
 
 
-def _normalize_svm_route(disagree: bool, selected_source: str) -> str | None:
+def _normalize_router_route(disagree: bool, selected_source: str) -> str | None:
     src = str(selected_source or "").strip().lower()
     if not disagree or src == "agree":
         return "Agree (no routing needed)"
-    if "regular" in src or src.startswith("svm_regular") or src == "fallback_regular":
-        return "SVM → Regular"
-    if "cascade" in src or "exp05" in src or "exp10" in src or "svm_cascade" in src:
-        return "SVM → Cascade"
+    if "regular" in src or src == "fallback_regular":
+        return "Router → Regular"
+    if "cascade" in src or "exp05" in src or src == "fallback_cascade":
+        return "Router → Cascade"
     return None
 
 
@@ -267,15 +311,20 @@ def _accumulate_detailed(
     true_labels = _true_label_series(df)
     n_tokens = int(len(df))
 
-    for model_scope in ("__overall__", model):
-        acc.tokens_by_slice[(family, model_scope, "__all__")] += n_tokens
-        acc.split_tokens[(family, model_scope, split_strategy, aug, "__all__")] += n_tokens
-
     exp_id = str(meta.get("experiment_id", ""))
-    is_svm = "svm" in exp_id.lower()
+    e_low = exp_id.strip().lower()
+    router_label = _router_label_for_experiment(exp_id)
+
+    # Token denominators: one baseline NER run per (model, split), not repeated per fusion experiment.
+    if e_low in ("exp01", "exp10_regular"):
+        for model_scope in ("__overall__", model):
+            acc.tokens_by_slice[(family, model_scope, "__all__")] += n_tokens
+            acc.split_tokens[(family, model_scope, split_strategy, aug, "__all__")] += n_tokens
 
     for method_name, col_candidates in METHOD_SPECS:
-        if method_name == "SVM Fused" and "fused_pred_label" not in df.columns:
+        if not _method_applies(exp_id, method_name):
+            continue
+        if method_name in ("Linear SVM Fusion", "RF Fusion") and "fused_pred_label" not in df.columns:
             continue
         preds: list[str] = []
         if method_name == "Cascade NER":
@@ -306,18 +355,23 @@ def _accumulate_detailed(
                     (family, model_scope, split_strategy, aug, method_name, err)
                 ] += 1
 
-    if is_svm and "fused_pred_label" in df.columns and "selected_source" in df.columns:
+    if (
+        router_label
+        and "fused_pred_label" in df.columns
+        and "selected_source" in df.columns
+    ):
         disagree = df["disagree"].astype(bool) if "disagree" in df.columns else pd.Series(False, index=df.index)
         fused = df["fused_pred_label"].astype(str)
         for model_scope in ("__overall__", model):
             for i in range(len(df)):
-                route = _normalize_svm_route(bool(disagree.iloc[i]), str(df["selected_source"].iloc[i]))
+                route = _normalize_router_route(bool(disagree.iloc[i]), str(df["selected_source"].iloc[i]))
                 if route is None:
                     continue
                 err = classify_error(str(true_labels.iloc[i]), str(fused.iloc[i]))
                 correct = err == "correct"
-                acc.svm_route[(family, model_scope, route, "correct" if correct else "error")] += 1
-                acc.svm_route_errors[(family, model_scope, route, err)] += 1
+                outcome = "correct" if correct else "error"
+                acc.svm_route[(family, model_scope, router_label, route, outcome)] += 1
+                acc.svm_route_errors[(family, model_scope, router_label, route, err)] += 1
 
 
 def _error_type_table(acc: _DetailAccumulator, family: str, model_scope: str) -> pd.DataFrame:
@@ -351,7 +405,7 @@ def _error_type_table(acc: _DetailAccumulator, family: str, model_scope: str) ->
 
 
 def _type_confusion_table(acc: _DetailAccumulator, family: str, model_scope: str, top_n: int = 14) -> pd.DataFrame:
-    """Top entity confusions with Regular / Cascade / SVM Fused counts."""
+    """Top entity confusions across Regular / Cascade / Linear SVM / RF columns."""
     pooled: Counter = Counter()
     for (slice_key, conf), n in acc.type_confusion.items():
         fam, scope, _meth = slice_key
@@ -393,19 +447,22 @@ def _type_confusion_table(acc: _DetailAccumulator, family: str, model_scope: str
     return pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
 
 
-def _svm_router_table(acc: _DetailAccumulator, family: str, model_scope: str, title: str) -> pd.DataFrame:
-    routes = [
-        "Agree (no routing needed)",
-        "SVM → Regular",
-        "SVM → Cascade",
-    ]
+def _router_table(
+    acc: _DetailAccumulator,
+    family: str,
+    model_scope: str,
+    title: str,
+    *,
+    router_label: str,
+) -> pd.DataFrame:
+    routes = list(ROUTER_ROUTES)
     rows: list[dict[str, Any]] = []
     total_n = 0
     total_correct = 0
     total_error = 0
     for route in routes:
-        correct = acc.svm_route.get((family, model_scope, route, "correct"), 0)
-        error = acc.svm_route.get((family, model_scope, route, "error"), 0)
+        correct = acc.svm_route.get((family, model_scope, router_label, route, "correct"), 0)
+        error = acc.svm_route.get((family, model_scope, router_label, route, "error"), 0)
         count = correct + error
         if count == 0 and route != "Agree (no routing needed)":
             continue
@@ -466,7 +523,7 @@ def _split_strategy_table(
         rows.append({
             "Split Strategy": split_strategy,
             "Aug.": aug,
-            "Method": method.replace("SVM Fused", "SVM Fusion"),
+            "Method": method,
             "FP": fp,
             "FN": fn,
             "Type": te,
@@ -485,18 +542,20 @@ def _error_types_by_routing_table(
     acc: _DetailAccumulator,
     family: str,
     model_scope: str,
+    *,
+    router_label: str,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     route_cols = {
         "Agree (no routing needed)": "Agree",
-        "SVM → Regular": "SVM→Regular",
-        "SVM → Cascade": "SVM→Cascade",
+        "Router → Regular": "Router→Regular",
+        "Router → Cascade": "Router→Cascade",
     }
     for err in ROUTING_ERROR_TYPES:
         row: dict[str, Any] = {"Error Type": err}
         row_total = 0
         for route, col in route_cols.items():
-            n = acc.svm_route_errors.get((family, model_scope, route, err), 0)
+            n = acc.svm_route_errors.get((family, model_scope, router_label, route, err), 0)
             row[col] = n
             row_total += n
         row["Total"] = row_total
@@ -504,7 +563,7 @@ def _error_types_by_routing_table(
     if not any(r.get("Total", 0) for r in rows):
         return pd.DataFrame()
     total_row: dict[str, Any] = {"Error Type": "TOTAL"}
-    for col in ("Agree", "SVM→Regular", "SVM→Cascade", "Total"):
+    for col in ("Agree", "Router→Regular", "Router→Cascade", "Total"):
         total_row[col] = sum(int(r.get(col, 0) or 0) for r in rows)
     rows.append(total_row)
     return pd.DataFrame(rows)
@@ -531,7 +590,7 @@ def _build_scope_summary_sections(
 
     err_tbl = _error_type_table(acc, family, model_scope)
     sections.append((
-        f"Error Analysis: Regular vs Cascade NER ({family} — {scope_label})",
+        f"Error Analysis: Regular vs Cascade vs Linear SVM vs RF ({family} — {scope_label})",
         err_tbl if not err_tbl.empty else _empty_section_note("error analysis"),
     ))
 
@@ -541,25 +600,30 @@ def _build_scope_summary_sections(
         tc if not tc.empty else _empty_section_note("type error by entity"),
     ))
 
-    svm = _svm_router_table(acc, family, model_scope, "SVM Router Results")
-    sections.append((
-        "SVM Router Results",
-        svm if not svm.empty else _empty_section_note("SVM router results"),
-    ))
+    for router_label in ("Linear SVM", "RF"):
+        router_tbl = _router_table(
+            acc, family, model_scope, f"{router_label} Router Results", router_label=router_label,
+        )
+        sections.append((
+            f"{router_label} Router Results",
+            router_tbl if not router_tbl.empty else _empty_section_note(f"{router_label} router"),
+        ))
 
-    dis = _svm_router_table(acc, family, model_scope, "SVM Routing on Disagreements")
-    if not dis.empty:
-        dis = dis[dis["Routing Decision"].astype(str).str.contains("SVM →", na=False)]
-    sections.append((
-        "SVM Routing on Disagreements",
-        dis if not dis.empty else _empty_section_note("SVM routing on disagreements"),
-    ))
+        dis = _router_table(
+            acc, family, model_scope, f"{router_label} Routing on Disagreements", router_label=router_label,
+        )
+        if not dis.empty:
+            dis = dis[dis["Routing Decision"].astype(str).str.contains("Router →", na=False)]
+        sections.append((
+            f"{router_label} Routing on Disagreements",
+            dis if not dis.empty else _empty_section_note(f"{router_label} routing on disagreements"),
+        ))
 
-    route_err = _error_types_by_routing_table(acc, family, model_scope)
-    sections.append((
-        "Error Types by Routing Decision",
-        route_err if not route_err.empty else _empty_section_note("error types by routing"),
-    ))
+        route_err = _error_types_by_routing_table(acc, family, model_scope, router_label=router_label)
+        sections.append((
+            f"{router_label} — Error Types by Routing Decision",
+            route_err if not route_err.empty else _empty_section_note(f"{router_label} routing errors"),
+        ))
 
     split_df = _split_strategy_table(acc, family, model_scope)
     sections.append((
@@ -665,42 +729,45 @@ def consolidate_workbooks_from_rows(
             print(f"[skip] {path.name}: {exc}", flush=True)
             continue
 
-        for sheet in SEED_AGG_SHEETS:
-            if sheet not in xl.sheet_names:
-                continue
-            try:
-                df = pd.read_excel(path, sheet_name=sheet)
-            except Exception:
-                continue
-            if df.empty:
-                continue
-            df = df.copy()
-            df["source_file"] = path.name
-            df["consolidated_experiment_id"] = meta.get("experiment_id")
-            df["crf_family"] = crf_family(str(meta.get("experiment_id", "")))
-            for k, v in meta.items():
-                col = f"run_{k}"
-                if col not in df.columns:
-                    df[col] = v
-            sheet_frames[sheet].append(df)
+        exp_id = str(meta.get("experiment_id", ""))
+        in_focus = _in_thesis_error_analysis_focus(exp_id)
 
-        if "error_examples" in xl.sheet_names:
-            try:
-                ex = pd.read_excel(path, sheet_name="error_examples")
-                if not ex.empty:
-                    ex = ex.copy()
-                    ex["source_file"] = path.name
-                    reservoir.add_frame(ex.head(5000))
-            except Exception:
-                pass
+        if in_focus:
+            for sheet in SEED_AGG_SHEETS:
+                if sheet not in xl.sheet_names:
+                    continue
+                try:
+                    df = pd.read_excel(path, sheet_name=sheet)
+                except Exception:
+                    continue
+                if df.empty:
+                    continue
+                df = df.copy()
+                df["source_file"] = path.name
+                df["consolidated_experiment_id"] = meta.get("experiment_id")
+                df["crf_family"] = crf_family(str(meta.get("experiment_id", "")))
+                for k, v in meta.items():
+                    col = f"run_{k}"
+                    if col not in df.columns:
+                        df[col] = v
+                sheet_frames[sheet].append(df)
 
-        if "detailed_results" in xl.sheet_names:
-            try:
-                usecols = None
-                dr = pd.read_excel(path, sheet_name="detailed_results")
-                _accumulate_detailed(detail_acc, dr, meta)
-            except Exception as exc:
-                print(f"[warn] detailed_results summary skipped for {path.name}: {exc}", flush=True)
+            if "error_examples" in xl.sheet_names:
+                try:
+                    ex = pd.read_excel(path, sheet_name="error_examples")
+                    if not ex.empty:
+                        ex = ex.copy()
+                        ex["source_file"] = path.name
+                        reservoir.add_frame(ex.head(5000))
+                except Exception:
+                    pass
+
+            if "detailed_results" in xl.sheet_names:
+                try:
+                    dr = pd.read_excel(path, sheet_name="detailed_results")
+                    _accumulate_detailed(detail_acc, dr, meta)
+                except Exception as exc:
+                    print(f"[warn] detailed_results summary skipped for {path.name}: {exc}", flush=True)
 
     stats = {"workbooks": n_files, "error_example_sample": len(reservoir.items)}
 
@@ -709,6 +776,13 @@ def consolidate_workbooks_from_rows(
         {"section": "ABOUT", "item": "skipped_sheets", "description": ", ".join(sorted(SKIP_SHEETS))},
         {"section": "ABOUT", "item": "workbooks_processed", "description": str(n_files)},
         {"section": "ABOUT", "item": "max_error_examples", "description": str(max_error_examples)},
+        {"section": "ABOUT", "item": "thesis_method_focus",
+         "description": (
+             "Regular NER (exp01), Cascade NER (exp04), Linear SVM Fusion (exp06_svm_ready), "
+             "RF Fusion (exp06_rf_ready); CRF analogs exp10_* when present"
+         )},
+        {"section": "ABOUT", "item": "focus_experiment_ids",
+         "description": ", ".join(sorted(FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS))},
         {"section": "ABOUT", "item": "summary_tabs",
          "description": (
              "Per family (summary_non_crf_* / summary_crf_*): overall, dictabert, berel, hero, "
