@@ -91,6 +91,9 @@ outputs/*
 !outputs/00 final_results/
 !outputs/00 final_results/**
 
+# Local reference PDF library (keep on disk only; do not version)
+outputs/00 final_results/thesis refferences/
+
 # Keep source datasets tracked in the repository
 !data/
 !data/**
