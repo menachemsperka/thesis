@@ -66,6 +66,7 @@ models/
 *.json
 *.pkl
 *.pickle
+!data/ner_dataset.pkl
 
 # Saved model artifacts
 *.pt

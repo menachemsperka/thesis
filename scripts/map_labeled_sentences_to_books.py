@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "core"))
 sys.path.insert(0, str(PROJECT_ROOT / "experiments"))
 
-from hebrew_text_io import read_ner_dataset_csv  # noqa: E402
+from hebrew_text_io import read_ner_dataset  # noqa: E402
 
 # Labeled token data (sheet ``ner_dataset``).
 DEFAULT_DATASET_XLSX = (
@@ -559,7 +559,7 @@ def load_labeled_dataset(path: Path, *, sheet_name: str) -> tuple[pd.DataFrame, 
     if suffix in {".xlsx", ".xlsm", ".xls"}:
         df = pd.read_excel(path, sheet_name=sheet_name)
         return df, f"xlsx:{sheet_name}"
-    df, encoding = read_ner_dataset_csv(path)
+    df, encoding = read_ner_dataset(path)
     return df, encoding
 
 

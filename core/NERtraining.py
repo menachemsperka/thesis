@@ -2,7 +2,7 @@ import importlib
 import evaluate
 import pandas as pd
 import th_functions as tf
-from hebrew_text_io import read_ner_dataset_csv, validate_hebrew_dataframe
+from hebrew_text_io import read_ner_dataset
 import os  # Add import for file handling
 import numpy as np
 from seqeval.metrics import classification_report
@@ -29,8 +29,7 @@ class PrepDataSetNERTraining:
         pass
 
     def load_and_prepare_data(self, file_path: str):
-        data, encoding_used = read_ner_dataset_csv(file_path)
-        validate_hebrew_dataframe(data, context=f"ner_dataset ({encoding_used})")
+        data, _encoding_used = read_ner_dataset(file_path)
         return data
 
     def run_training_steps(self, data):

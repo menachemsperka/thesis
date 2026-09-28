@@ -9,11 +9,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from experiments.common import configure_network_environment
+from experiments.common import configure_network_environment, resolve_ner_dataset
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATASET_PATH = PROJECT_ROOT / "data" / "ner_dataset.csv"
+
+DATASET_PATH = resolve_ner_dataset()
 SUBSET_DIR = PROJECT_ROOT / "outputs" / "subsets"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
 

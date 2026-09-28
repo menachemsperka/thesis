@@ -13,6 +13,9 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 DATA_DIR = PROJECT_ROOT / "data"
+NER_DATASET_PKL = "ner_dataset.pkl"
+NER_DATASET_XLSX = "ner_dataset.xlsx"
+NER_DATASET_CSV = "ner_dataset.csv"
 DEBUG = False
 DEFAULT_MODEL_ID = "dicta-il/dictabert"
 
@@ -136,7 +139,21 @@ def get_experiment_output_dir(experiment_id: str) -> Path:
     return exp_dir
 
 
+def resolve_ner_dataset() -> Path:
+    """Prefer ``data/ner_dataset.pkl`` (canonical Hebrew text), then xlsx/csv."""
+    for name in (NER_DATASET_PKL, NER_DATASET_XLSX, NER_DATASET_CSV):
+        path = DATA_DIR / name
+        if path.exists():
+            return path
+    raise FileNotFoundError(
+        f"No NER dataset found under {DATA_DIR} "
+        f"(expected one of {NER_DATASET_PKL}, {NER_DATASET_XLSX}, {NER_DATASET_CSV})."
+    )
+
+
 def resolve_dataset(filename: str) -> Path:
+    if filename == NER_DATASET_CSV:
+        return resolve_ner_dataset()
     path = DATA_DIR / filename
     if not path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")

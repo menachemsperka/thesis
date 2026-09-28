@@ -370,9 +370,9 @@ def _build_sentence_subset(
     core_dir = PROJECT_ROOT / "core"
     if str(core_dir) not in sys.path:
         sys.path.insert(0, str(core_dir))
-    from hebrew_text_io import read_ner_dataset_csv
+    from hebrew_text_io import read_ner_dataset
 
-    df, _encoding_used = read_ner_dataset_csv(source_csv)
+    df, _encoding_used = read_ner_dataset(source_csv)
     if "id" not in df.columns:
         raise ValueError("Expected an 'id' column in dataset for sentence grouping.")
 
@@ -420,7 +420,9 @@ def _apply_run_layout(
         if source_override:
             source_csv = Path(source_override).expanduser().resolve()
         else:
-            source_csv = PROJECT_ROOT / "data" / "ner_dataset.csv"
+            from common import resolve_ner_dataset
+
+            source_csv = resolve_ner_dataset()
         used_sentences, used_rows = _build_sentence_subset(
             source_csv,
             subset_csv,
@@ -2163,12 +2165,11 @@ def _validate_hebrew_corpus_and_splits() -> None:
     core_dir = PROJECT_ROOT / "core"
     if str(core_dir) not in sys.path:
         sys.path.insert(0, str(core_dir))
-    from hebrew_text_io import read_ner_dataset_csv, validate_hebrew_dataframe
+    from hebrew_text_io import read_ner_dataset
 
     csv_path = resolve_dataset("ner_dataset.csv")
     _log(f"Validating Hebrew text in {csv_path}...")
-    df, enc = read_ner_dataset_csv(csv_path)
-    validate_hebrew_dataframe(df, context=f"ner_dataset ({enc})")
+    df, enc = read_ner_dataset(csv_path)
     _log(f"Dataset encoding OK ({enc}).")
 
     meta_path = EXP07_SPLITS_DIR / "split_meta.json"

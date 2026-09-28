@@ -48,6 +48,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -230,10 +231,16 @@ Best thresholds:
 # ============================================================================
 # Configuration
 # ============================================================================
-DEFAULT_CSV_PATH = os.environ.get(
-    "THESIS_NER_CSV",
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "ner_dataset.csv"),
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+_DEFAULT_NER_DATASET = next(
+    (
+        os.path.join(_DATA_DIR, name)
+        for name in ("ner_dataset.pkl", "ner_dataset.xlsx", "ner_dataset.csv")
+        if os.path.exists(os.path.join(_DATA_DIR, name))
+    ),
+    os.path.join(_DATA_DIR, "ner_dataset.pkl"),
 )
+DEFAULT_CSV_PATH = os.environ.get("THESIS_NER_CSV", _DEFAULT_NER_DATASET)
 CSV_SPLIT_VAL = 0.1
 CSV_SPLIT_TEST = 0.1
 CSV_SHUFFLE_SEED = 42
@@ -378,7 +385,11 @@ class SentenceDataset:
 # Data loading — unified format: {tokens, bio_tags, entity_types}
 # ============================================================================
 def _read_csv_with_fallback(csv_path, encoding_override=None):
-    from hebrew_text_io import read_ner_dataset_csv
+    from hebrew_text_io import read_ner_dataset, read_ner_dataset_csv
+
+    path = Path(str(csv_path))
+    if path.suffix.lower() not in {".csv"}:
+        return read_ner_dataset(path)
 
     if encoding_override:
         prev = os.environ.get("THESIS_CSV_ENCODING")
@@ -387,14 +398,14 @@ def _read_csv_with_fallback(csv_path, encoding_override=None):
         else:
             os.environ["THESIS_CSV_ENCODING"] = str(encoding_override)
         try:
-            df, enc = read_ner_dataset_csv(csv_path)
+            df, enc = read_ner_dataset_csv(path)
         finally:
             if prev is None:
                 os.environ.pop("THESIS_CSV_ENCODING", None)
             else:
                 os.environ["THESIS_CSV_ENCODING"] = prev
         return df, enc
-    df, enc = read_ner_dataset_csv(csv_path)
+    df, enc = read_ner_dataset_csv(path)
     return df, enc
 
 

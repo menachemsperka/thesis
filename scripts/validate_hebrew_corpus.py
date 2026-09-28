@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "experiments"))
 sys.path.insert(0, str(PROJECT_ROOT / "core"))
 
 from common import resolve_dataset  # noqa: E402
-from hebrew_text_io import HebrewCorpusEncodingError, read_ner_dataset_csv, validate_hebrew_dataframe  # noqa: E402
+from hebrew_text_io import HebrewCorpusEncodingError, read_ner_dataset  # noqa: E402
 from split_io import load_split  # noqa: E402
 
 EXP07_SPLITS = PROJECT_ROOT / "outputs" / "exp07" / "splits"
@@ -20,9 +20,8 @@ EXP07_SPLITS = PROJECT_ROOT / "outputs" / "exp07" / "splits"
 def main() -> int:
     csv_path = resolve_dataset("ner_dataset.csv")
     print(f"Checking {csv_path} ...")
-    df, enc = read_ner_dataset_csv(csv_path)
-    validate_hebrew_dataframe(df, context=f"ner_dataset ({enc})")
-    print(f"OK: CSV decoded as {enc!r} with Hebrew content.")
+    _df, enc = read_ner_dataset(csv_path)
+    print(f"OK: dataset loaded as {enc!r} with Hebrew content.")
 
     meta_path = EXP07_SPLITS / "split_meta.json"
     if meta_path.exists():

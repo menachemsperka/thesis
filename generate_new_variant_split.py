@@ -34,7 +34,9 @@ from NERtraining import PrepDataSetNERTraining
 
 
 def main() -> None:
-    dataset_path = PROJECT_ROOT / "data" / "ner_dataset.csv"
+    from common import resolve_ner_dataset
+
+    dataset_path = resolve_ner_dataset()
     if not dataset_path.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_path}")
 

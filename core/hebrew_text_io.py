@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+import pickle
 import re
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,46 @@ def read_ner_dataset_csv(
         )
 
     return best_df, best_enc
+
+
+def read_ner_dataset(
+    path: str | Path,
+    *,
+    token_col: str = "token",
+    min_hebrew_score: int = 50,
+) -> tuple[pd.DataFrame, str]:
+    """Load the Hebrew NER token dataset from pickle, Excel, or CSV.
+
+    Pickle (``data/ner_dataset.pkl``) avoids CSV encoding issues on Colab and
+    across platforms. CSV still uses :func:`read_ner_dataset_csv` heuristics.
+    """
+    dataset_path = Path(path)
+    suffix = dataset_path.suffix.lower()
+    if suffix in {".pkl", ".pickle"}:
+        with dataset_path.open("rb") as handle:
+            df = pickle.load(handle)
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError(f"Expected a pandas DataFrame in {dataset_path}, got {type(df)!r}")
+        if _skip_hebrew_validation():
+            return df, "pickle"
+        validate_hebrew_dataframe(df, context=f"{dataset_path.name} (pickle)", token_col=token_col, min_hebrew_score=min_hebrew_score)
+        return df, "pickle"
+    if suffix in {".xlsx", ".xls"}:
+        df = pd.read_excel(dataset_path)
+        if _skip_hebrew_validation():
+            return df, "excel"
+        validate_hebrew_dataframe(df, context=f"{dataset_path.name} (excel)", token_col=token_col, min_hebrew_score=min_hebrew_score)
+        return df, "excel"
+    if suffix == ".csv":
+        return read_ner_dataset_csv(
+            dataset_path,
+            token_col=token_col,
+            min_hebrew_score=min_hebrew_score,
+        )
+    raise ValueError(
+        f"Unsupported NER dataset format {suffix!r} for {dataset_path}. "
+        "Use .pkl, .xlsx, or .csv."
+    )
 
 
 def validate_hebrew_sentence_list(

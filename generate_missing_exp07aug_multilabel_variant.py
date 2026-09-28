@@ -70,7 +70,9 @@ def main() -> None:
 
     # Load base data for augmentation token lookup.
     worker = PrepDataSetNERTraining()
-    data_df = worker.load_and_prepare_data(str(PROJECT_ROOT / "data" / "ner_dataset.csv"))
+    from common import resolve_ner_dataset
+
+    data_df = worker.load_and_prepare_data(str(resolve_ner_dataset()))
 
     model_name, _ = configure_model_environment()
 
