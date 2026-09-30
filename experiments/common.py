@@ -148,7 +148,13 @@ def get_experiment_output_dir(experiment_id: str) -> Path:
 
 
 def resolve_ner_dataset() -> Path:
-    """Prefer ``data/ner_dataset.pkl`` (canonical Hebrew text), then xlsx/csv."""
+    """Active NER corpus: ``THESIS_NER_CSV`` if set, else ``data/ner_dataset.pkl`` (then xlsx/csv)."""
+    override = (os.environ.get("THESIS_NER_CSV") or "").strip()
+    if override:
+        path = Path(override).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"THESIS_NER_CSV not found: {path}")
+        return path
     for name in (NER_DATASET_PKL, NER_DATASET_XLSX, NER_DATASET_CSV):
         path = DATA_DIR / name
         if path.exists():

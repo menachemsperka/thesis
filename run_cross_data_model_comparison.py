@@ -3844,8 +3844,13 @@ if __name__ == "__main__":
     if args.journal_paper:
         if not (os.environ.get("THESIS_CROSS_EXPERIMENTS") or "").strip():
             args.experiments = journal_default_experiments
+        # Journal default is 3 seeds unless CLI/env already set a different count.
+        _parser_default_seeds = int(
+            (os.environ.get("THESIS_CROSS_NUM_SEEDS") or "20").strip() or "20"
+        )
         if not (os.environ.get("THESIS_CROSS_NUM_SEEDS") or "").strip():
-            args.num_seeds = 3
+            if args.num_seeds == _parser_default_seeds:
+                args.num_seeds = 3
         args.skip_augmentation = True
         args.condition_sources = "exp07"
         args.consolidated_error_analysis = "all"
@@ -3875,27 +3880,36 @@ if __name__ == "__main__":
     else:
         os.environ.pop("THESIS_MODEL_SAVE_SEED", None)
 
-    result = run_comparison(
-        experiment_ids=experiment_ids,
-        model_keys=model_keys,
-        exp07_source=args.exp07_source,
-        force_exp08=args.force_exp08,
-        num_seeds=args.num_seeds,
-        resume=resume_flag,
-        checkpoint_file=(args.checkpoint_file or None),
-        skip_augmentation=args.skip_augmentation,
-        condition_sources=condition_sources,
-        condition_keys=condition_keys,
-        rebuild_from_checkpoint=args.rebuild_from_checkpoint,
-        base_mode=args.base_mode,
-        rerun_experiments=rerun_experiments or None,
-        skip_consolidated_error_analysis=args.skip_consolidated_error_analysis,
-        consolidated_error_analysis_scope=args.consolidated_error_analysis,
-        output_dir=(args.output_dir or None),
-        subset_sentences=(args.subset_sentences if args.subset_sentences > 0 else None),
-        subset_seed=args.subset_seed,
-        training_seeds_file=(args.training_seeds_file or None),
-        regenerate_training_seeds=bool(args.regenerate_training_seeds),
-        calibrate_exp04_loss_weights=calibrate_loss,
-        regenerate_exp04_loss_grid=bool(args.regenerate_exp04_loss_grid),
-    )
+    try:
+        run_comparison(
+            experiment_ids=experiment_ids,
+            model_keys=model_keys,
+            exp07_source=args.exp07_source,
+            force_exp08=args.force_exp08,
+            num_seeds=args.num_seeds,
+            resume=resume_flag,
+            checkpoint_file=(args.checkpoint_file or None),
+            skip_augmentation=args.skip_augmentation,
+            condition_sources=condition_sources,
+            condition_keys=condition_keys,
+            rebuild_from_checkpoint=args.rebuild_from_checkpoint,
+            base_mode=args.base_mode,
+            rerun_experiments=rerun_experiments or None,
+            skip_consolidated_error_analysis=args.skip_consolidated_error_analysis,
+            consolidated_error_analysis_scope=args.consolidated_error_analysis,
+            output_dir=(args.output_dir or None),
+            subset_sentences=(args.subset_sentences if args.subset_sentences > 0 else None),
+            subset_seed=args.subset_seed,
+            training_seeds_file=(args.training_seeds_file or None),
+            regenerate_training_seeds=bool(args.regenerate_training_seeds),
+            calibrate_exp04_loss_weights=calibrate_loss,
+            regenerate_exp04_loss_grid=bool(args.regenerate_exp04_loss_grid),
+        )
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except Exception as exc:
+        import traceback
+
+        print(f"\n[FATAL] {exc}", file=sys.stderr, flush=True)
+        traceback.print_exc()
+        raise SystemExit(1) from exc
