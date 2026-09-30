@@ -71,11 +71,10 @@ To ensure the project runs properly in Colab (such as bypassing organization pro
 ```python
 import os
 
-# 1. Enable Colab-specific modifications
-# - Explicitly unsets any Intel/organization network proxies
-# - Sets up optimal HuggingFace Trainer arguments 
-#   (saves to drive, sequential checkpointing, loads best model at the end)
-os.environ["THESIS_RUN_ENV"] = "colab"
+# 1. Colab-specific modifications (optional — auto-detected via google.colab)
+# - Unsets Intel/organization proxies that break Hugging Face downloads
+# - Disk-minimal Trainer + CUDA-aware fp16 (see core/runtime_env.py)
+os.environ.setdefault("THESIS_RUN_ENV", "colab")
 
 # 2. Disable Weights & Biases (W&B) logging
 # Recommended for Colab as W&B prompts can sometimes block cell execution
@@ -110,6 +109,21 @@ If Exp01/Exp04 base cache is missing, warm it first:
 ```python
 !python run_cross_data_model_comparison.py --experiments 01,04 --models dictabert,berel --base-mode auto
 ```
+
+**IEEE journal profile (`--journal-paper` — loss grid + 3 seeds + OOF fusion + export sheets):**
+```python
+OUTPUT = "/content/drive/MyDrive/thesis_project/cross_comparison_journal"
+
+!python run_cross_data_model_comparison.py \
+  --journal-paper \
+  --resume \
+  --output-dir {OUTPUT} \
+  --models dictabert,berel \
+  --base-mode auto \
+  --exp07-source auto
+```
+
+Works on **GPU or CPU** runtime: GPU uses fp16 when CUDA is available; CPU turns fp16 off and uses smaller Exp04 batches automatically. For CPU smoke tests only, set `THESIS_EXP04_FAST=1` (not for paper numbers). See `thesis_overview.md` Part IV §6.
 
 **To run interactively in a Python cell:**
 ```python

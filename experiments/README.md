@@ -14,6 +14,7 @@ runners (`run_all_experiments.py`, `run_split_comparison.py`).
 | `experiment_02_imbalance_llm_duplication.py` | Data augmentation via LLM-generated and duplicated sentences |
 | `experiment_03_auc_2t.py` | AUC-2T: auxiliary uncertainty classification with entity + BIO heads |
 | `experiment_04_auc_cascaded_pipeline.py` | Three-step cascaded NER pipeline (entity → BIO → type) |
+| `experiment_04_loss_weight_grid.py` | Validation grid for $\lambda_{bio}$, $\lambda_{type}$ (9 configs on the val split) |
 | `experiment_05_auc_cascaded_pipeline_step3_consistency.py` | Experiment 04 with Step-3 B/I entity-type reconciliation |
 | `experiment_06_fusion_regular_and_cascaded.py` | Fuses experiment 01 and 04 predictions via confidence arbitration |
 | `experiment_06_fusion_normalized.py` | Calibrated fusion: applies temperature scaling to both confidence sources before arbitration |
@@ -40,6 +41,20 @@ Related core module:
 |------|---------|
 | `../core/confidence_calibration.py` | Learns and applies per-model temperature scaling for confidence normalization |
 | `../core/fusion_strategies.py` | Shared prototypes for alternative fusion ideas (entropy, learned weighting, rule-based arbitration) |
+
+## Exp04 loss-weight validation grid
+
+Cascaded training uses
+$\mathcal{L}=\mathcal{L}_{entity}+\lambda_{bio}\mathcal{L}_{bio}+\lambda_{type}\mathcal{L}_{type}$.
+Run a **validation-only** coarse grid before locking weights for multi-seed runs:
+
+```bash
+set THESIS_SPLIT_SEED=42
+python experiments/experiment_04_loss_weight_grid.py
+```
+
+Optional: `THESIS_EXP04_LAMBDA_GRID_VALUES=1,5,10`. Results: `outputs/exp04_lambda_grid/`.  
+Apply the selected pair with `THESIS_EXP04_LAMBDA_BIO` and `THESIS_EXP04_LAMBDA_TYPE` when running Exp04/05.
 
 ## Experiment 04 in One Paragraph
 
@@ -152,7 +167,7 @@ The remaining losses do not mean the method failed conceptually. Fusion only aff
 
 ### Confidence fusion (`06_ready`, `10_fusion_ready`)
 
-Per-token scalar confidences are built in `experiments/fusion_ready_sources.py` (documented in `theisis overview.md` §11.2):
+Per-token scalar confidences are built in `experiments/fusion_ready_sources.py` (documented in `thesis_overview.md` §11.2):
 
 - **Regular (Exp01 / Exp10 regular):** `regular_prob` — Exp01: max tag softmax; Exp10 CRF: softmax mass on the Viterbi tag.
 - **Cascade (Exp04 / Exp10 cascade):** `cascade_prob` — if predicted `O`, `1 - entity_prob`; else `entity_prob * bio_prob`.

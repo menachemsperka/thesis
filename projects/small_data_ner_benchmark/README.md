@@ -122,7 +122,7 @@ Each sentence is a **multilabel instance**: the set of **entity types** appearin
 
 **Properties:** Train and eval **mirror label proportions** more closely than random splitting—important when some types appear in only a few sentences.
 
-Implementation details (tie-break order) differ slightly from the alternate `after_multilabel_stratified` variant in Exp07; this benchmark uses **`after_multilabel_iterative_paper` only**.
+This benchmark uses the Exp07 **`after_multilabel_iterative_paper`** split variant only.
 
 ---
 

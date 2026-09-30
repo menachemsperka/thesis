@@ -1,8 +1,9 @@
 """
-fusion_router_ready_common.py — Shared sklearn disagreement routers for ready fusion.
+fusion_router_ready_common.py — In-sample sklearn disagreement routers (``*_ready``).
 
-Used by Exp06 (Exp01 + Exp04) and Exp10 (CRF) ready fusion experiments.
-See ``theisis overview.md`` §12 (linear/kernel SVM) and §12B (NB, LR, RF, MLP).
+**Appendix / exploratory only:** the router is fit and scored on the same eval tokens
+(upper-bound routing). Primary thesis fusion results use ``fusion_router_oof_common.py``
+(§12C). See ``theisis overview.md`` §12.4 (ready limitation) and §12C (OOF CV).
 """
 from __future__ import annotations
 

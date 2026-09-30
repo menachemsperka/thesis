@@ -293,6 +293,14 @@ LOSS_CONFIG = {
     "lambda_type": 5.0,
 }
 
+# Override loss weights (e.g. validation grid in experiment_04_loss_weight_grid.py).
+LOSS_CONFIG["lambda_bio"] = _env_float(
+    "THESIS_EXP04_LAMBDA_BIO", LOSS_CONFIG["lambda_bio"], minimum=0.0,
+)
+LOSS_CONFIG["lambda_type"] = _env_float(
+    "THESIS_EXP04_LAMBDA_TYPE", LOSS_CONFIG["lambda_type"], minimum=0.0,
+)
+
 THRESHOLD_SWEEP = np.arange(0.10, 0.91, 0.05)
 
 # ---------------------------------------------------------------------------
@@ -1386,6 +1394,18 @@ if __name__ == "__main__":
     # `detailed_results` contains token-level predictions for inspection.
     # Both include `eval_mode` so students can compare predicted vs oracle.
     df_metrics = pd.DataFrame(metrics_history)
+    df_loss_config = pd.DataFrame(
+        [
+            {
+                "lambda_bio": LOSS_CONFIG["lambda_bio"],
+                "lambda_type": LOSS_CONFIG["lambda_type"],
+                "entity_loss": LOSS_CONFIG["entity_loss"],
+                "bio_loss": LOSS_CONFIG["bio_loss"],
+                "type_loss": LOSS_CONFIG["type_loss"],
+                "split_seed": os.environ.get("THESIS_SPLIT_SEED", "42"),
+            }
+        ]
+    )
     details_frames = []
     for mode_tag in [eval_mode_tag(m) for m in EVAL_CASCADE_MODES]:
         rows = details_by_mode.get(mode_tag, [])
@@ -1397,6 +1417,7 @@ if __name__ == "__main__":
     excel_path = os.path.join(os.path.dirname(__file__), "cascaded_pipeline_results.xlsx")
     try:
         with pd.ExcelWriter(excel_path) as writer:
+            df_loss_config.to_excel(writer, sheet_name="loss_config", index=False)
             df_metrics.to_excel(writer, sheet_name="metrics", index=False)
             if not df_details.empty:
                 df_details.to_excel(writer, sheet_name="detailed_results", index=False)

@@ -98,51 +98,29 @@ Limitations of Method 2 (important for comparison):
 2. It does not explicitly optimize per-label deficits in both folds at each assignment step.
 3. It can preserve train coverage well but still drift on eval proportionality for some minority labels.
 
-### Exp07 Method 3: Multilabel Stratified (Iterative Stratification)
+### Exp07 Method 3: Multilabel Stratified (Paper-Style Tie-Breaking)
 
-Implementation: `_multilabel_stratified_split(...)`
-
-1. Treat each sentence as a multilabel instance using the set of unique non-O labels in that sentence.
-2. Build per-label sentence index lists and desired train/eval counts from the split ratio (70/30).
-3. Process labels from rarest to most common (fewest unassigned examples first).
-4. For each unassigned sentence containing the current label, compute each fold's remaining need across all labels present in that sentence.
-5. Assign the sentence to the fold (train or eval) with greater remaining need (with tiny random tie-break noise).
-6. Update current per-label counts after each assignment.
-7. After label-driven assignment, distribute any remaining unassigned sentences (typically O-only) to satisfy overall train size.
-8. Return final train/eval sentence lists.
+Implementation: `_multilabel_iterative_paper_split(...)`
 
 Method 2 vs Method 3 (direct comparison):
 
 1. Optimization target:
    - Method 2: heuristic train-coverage-oriented label-aware greedy assignment.
-   - Method 3: explicit per-label train/eval need balancing during assignment.
+   - Method 3: explicit per-label train/eval balancing with paper-style iterative stratification.
 2. Label granularity:
-   - Method 2: label-aware helper logic, but not explicit multilabel deficit tracking for every step.
-   - Method 3: each sentence is treated as a multilabel instance and scored against fold deficits of all its labels.
+   - Method 2: label-aware helper logic, but not full multilabel deficit tracking at each step.
+   - Method 3: each sentence is a multilabel instance; assignment uses rare-label-first tie-breaking.
 3. Rare-label handling:
    - Method 2: tends to protect rare labels in train.
-   - Method 3: processes rare labels first and tries to preserve proportional presence across both folds.
+   - Method 3: processes rarest remaining labels first and targets proportional presence in both folds.
 4. Expected fold behavior:
    - Method 2: usually better than random for coverage, but proportionality can still be uneven.
-   - Method 3: generally closer to true multilabel stratification and balanced representation in train and eval.
+   - Method 3: closer to Sechidis-style multilabel stratification for train and eval.
 
-### What Method 2 Is Missing (and Method 3 Adds)
+Legacy note: an older two-fold variant (`_multilabel_stratified_split_DEACTIVATED`) is retained in
+`exp07_split_artifacts.py` for reference only and is **not** generated or used in cross-comparison.
 
-Method 2 (`_label_aware_split`) is useful, but it is still a generic greedy helper. It does **not** explicitly optimize the full multilabel allocation problem sentence-by-sentence with per-label fold deficits.
-
-What Method 3 adds on top of Method 2:
-
-1. **True multilabel view per sentence**: each sentence is treated as a set of labels and allocated by considering all labels it carries simultaneously.
-2. **Rarest-label-first control loop**: assignment order is driven by the rarest still-unassigned labels, which gives minority labels priority during allocation.
-3. **Per-label remaining-need objective**: each assignment compares train/eval demand gaps for the sentence's labels and chooses the fold with greater total need.
-4. **Closer proportional matching by label**: the algorithm directly targets per-label train/eval proportions, rather than only broad label-coverage heuristics.
-5. **More principled behavior for co-occurring labels**: when labels co-appear in the same sentence, Method 3 accounts for their joint effect during assignment.
-
-Why this matters: unlike simple rarity heuristics, this method explicitly targets proportional label representation in both folds and is closer to true multilabel stratification (Sechidis et al., 2011).
-
-### Exp07 Method 4: Multilabel Stratified (Paper-Style Tie-Breaking)
-
-Implementation: `_multilabel_iterative_paper_split(...)`
+Steps:
 
 1. Treat each sentence as a multilabel instance using the set of unique non-O labels in that sentence.
 2. Build per-label sentence index lists and desired train/eval counts from the split ratio (70/30).
@@ -155,15 +133,6 @@ Implementation: `_multilabel_iterative_paper_split(...)`
 6. Continue until label-driven assignment is exhausted.
 7. Place any leftover sentences afterward while preserving the overall 70/30 sentence target.
 8. Return final train/eval sentence lists.
-
-What is different from Method 3:
-
-1. Method 3 uses the summed remaining need across all labels in the candidate sentence.
-2. Method 4 gives first priority to the currently selected rare label instead of the sentence's aggregate cross-label deficit.
-3. Method 4 also makes fold capacity an explicit tie-break stage before randomness.
-4. So Method 3 is a more blended aggregate-deficit heuristic, while Method 4 is a more paper-faithful rare-label-first assignment rule.
-
-Why this matters: both methods are multilabel-aware, but they resolve ambiguous assignments differently. Method 4 tests whether the more paper-style tie-breaking policy leads to different downstream behavior than Method 3.
 
 ### Exp07 output artifacts used downstream
 
@@ -304,7 +273,7 @@ For each selected model, experiment, and condition:
 ## 6) Reviewer Notes (Concise)
 
 1. Exp01 is the common baseline engine and also the execution target for pre-split comparison runs.
-2. Exp07 contributes deterministic split artifacts for four sentence allocation policies.
+2. Exp07 contributes deterministic split artifacts for three sentence allocation policies.
 3. Exp08 contributes controlled train-only augmentation while preserving eval integrity.
 4. Cross comparison standardizes evaluation by forcing all downstream experiments to consume explicit train/eval JSON pairs.
 5. The pipeline supports resumable long runs via progress checkpointing.

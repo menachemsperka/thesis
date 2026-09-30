@@ -30,8 +30,8 @@ Ready experiments:
 * ``06_entropy_ready``
 * ``06_learned_ready``
 * ``06_ensemble_ready``
-* ``06_svm_ready`` — linear SVM router (``LinearSVC``)
-* ``06_svm_kernel_ready``, ``06_nb_ready``, ``06_lr_ready``, ``06_rf_ready``, ``06_mlp_ready``
+* ``06_svm_oof``, ``06_rf_oof``, … — **primary** ML routers (5-fold stratified CV + OOF; overview §12C)
+* ``06_svm_ready``, ``06_svm_kernel_ready``, ``06_nb_ready``, ``06_lr_ready``, ``06_rf_ready``, ``06_mlp_ready`` — appendix / in-sample routing upper bound only
 * ``10_regular`` — BERT-CRF regular NER (train or reuse)
 * ``10_cascade`` — Cascaded pipeline with CRF + Step-3 consistency (train or reuse)
 * ``10_fusion_ready`` — Confidence fusion of Exp10 CRF outputs (``regular_prob`` vs ``cascade_prob``; overview §11.2)
@@ -78,7 +78,7 @@ Run Experiment 10 (BERT-CRF + cascaded CRF fusion):
     python run_cross_data_model_comparison.py --experiments 10_regular,10_cascade,10_fusion_ready,10_svm_ready --models dictabert,berel --base-mode auto
 
 Teaching guide for Experiment 10: ``experiments/experiment_10_README.md`` (CRF math, file map, lab exercises).
-Also documented in ``theisis overview.md`` Section 12A.
+Also documented in ``thesis_overview.md`` Section 12A.
 
 Run the default comparison set:
 
@@ -99,13 +99,19 @@ Environment Variables
     Exp07 split artifact policy: ``auto`` (default), ``saved``, ``rerun``.
 ``THESIS_CROSS_EXPERIMENTS``
     Comma-separated experiment IDs (default:
-    ``01,04,05_ready,06_ready,06_svm_ready``).
+    ``01,04,05_ready,06_ready,06_svm_oof``).
 ``THESIS_CROSS_MODELS``
     Comma-separated model keys (default: ``dictabert,berel,hero,alephbertgimmel``).
     Multilingual baselines: ``xlm_roberta``, ``mt5``. Full set:
     ``dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5``.
 ``THESIS_CROSS_NUM_SEEDS``
     Seed count for exp07/exp08 preparation (default: ``20`` for publication-quality).
+``THESIS_CROSS_TRAINING_SEEDS_FILE``
+    Path to persisted training seeds JSON (default: ``{output-dir}/training_seeds.json``).
+``THESIS_CROSS_SEEDS_MASTER``
+    Optional RNG master when **creating** a new seed file (reproducible random draw). If unset, uses OS entropy.
+``THESIS_CROSS_TRAINING_SEEDS_JSON``
+    Set by the runner after loading seeds (internal; do not edit mid-run).
 ``THESIS_SAVE_TRAINED_MODELS``
     Cross-comparison default is off. Set to ``1`` or pass ``--save-trained-models`` to copy
     weights into ``outputs/trained_models/`` (e.g. Hugging Face upload). Ready fusion (05/06/10)
@@ -125,15 +131,18 @@ Environment Variables
     Exp01 learning rate for all models (default **5e-5** in fair profile).
 ``THESIS_TRAINER_WEIGHT_DECAY``
     Exp01 weight decay (default **0** in fair profile).
+``THESIS_RUN_ENV``
+    ``local`` (default) or ``colab``. Colab is auto-detected when ``google.colab`` is
+    importable (``core/runtime_env.py``); ``colab`` clears corporate proxies.
 ``THESIS_TRAINER_FP16``
-    Exp01 mixed precision on Colab (default **1**).
+    Exp01 mixed precision when CUDA is available (default **1** on GPU, **0** on CPU).
 ``THESIS_BALANCED_CLASS_WEIGHTS``
     If ``1``, use inverse-frequency token class weights in Exp01 for **all** models.
 ``THESIS_TRAINER_BEST_F1_CHECKPOINT``
     If ``1`` on Colab, evaluate every epoch and reload the best-F1 weights from ``/tmp`` (slower).
 ``THESIS_EXP04_EPOCHS``, ``THESIS_EXP04_TRAIN_BATCH``, etc.
     Exp04 cascaded training; see ``core/auc_cascaded_pipeline.py`` and
-    ``cross_comparison_fair_training_overview.md``.
+    ``thesis_overview.md`` Part II.
 ``THESIS_CSV_ENCODING``
     Force CSV decode (e.g. ``utf-8``, ``cp1255``) when auto-detection is wrong.
 ``THESIS_SKIP_HEBREW_TEXT_VALIDATION``
@@ -190,6 +199,7 @@ EXP08_SPLITS_DIR = OUTPUTS_DIR / "exp08" / "splits"
 EXP07_AUG_SPLITS_DIR = OUTPUTS_DIR / "exp07_augmented" / "splits"
 COMPARISON_DIR = OUTPUTS_DIR / "cross_comparison"
 DEFAULT_BASE_SEED = 42
+TRAINING_SEEDS_FILENAME = "training_seeds.json"
 
 if str(EXPERIMENTS_DIR) not in sys.path:
     sys.path.insert(0, str(EXPERIMENTS_DIR))
@@ -257,7 +267,13 @@ EXP_NAMES: dict[str, str] = {
     "06_nb_ready": "Naive Bayes Router Fusion (Ready)",
     "06_lr_ready": "Logistic Regression Router Fusion (Ready)",
     "06_rf_ready": "Random Forest Router Fusion (Ready)",
-    "06_mlp_ready": "MLP Router Fusion (Ready)",
+    "06_mlp_ready": "MLP Router Fusion (Ready, in-sample bound)",
+    "06_svm_oof": "Linear SVM Router Fusion (OOF CV)",
+    "06_svm_kernel_oof": "Kernel SVM Router Fusion (OOF CV)",
+    "06_nb_oof": "Naive Bayes Router Fusion (OOF CV)",
+    "06_lr_oof": "Logistic Regression Router Fusion (OOF CV)",
+    "06_rf_oof": "Random Forest Router Fusion (OOF CV)",
+    "06_mlp_oof": "MLP Router Fusion (OOF CV)",
     "10_regular": "Regular NER (BERT-CRF)",
     "10_cascade": "Cascaded Pipeline (CRF + Consistency)",
     "10_fusion_ready": "Fusion Regular-CRF + Cascaded-CRF (Ready)",
@@ -286,6 +302,12 @@ EXP_SCRIPTS: dict[str, str] = {
     "06_lr_ready": "experiment_06_fusion_lr_ready",
     "06_rf_ready": "experiment_06_fusion_rf_ready",
     "06_mlp_ready": "experiment_06_fusion_mlp_ready",
+    "06_svm_oof": "experiment_06_fusion_svm_oof",
+    "06_svm_kernel_oof": "experiment_06_fusion_svm_kernel_oof",
+    "06_nb_oof": "experiment_06_fusion_nb_oof",
+    "06_lr_oof": "experiment_06_fusion_lr_oof",
+    "06_rf_oof": "experiment_06_fusion_rf_oof",
+    "06_mlp_oof": "experiment_06_fusion_mlp_oof",
     "10_regular": "experiment_10_regular_ner_crf",
     "10_cascade": "experiment_10_cascaded_pipeline_crf",
     "10_fusion_ready": "experiment_10_fusion_crf_ready",
@@ -340,15 +362,24 @@ READY_ML_ROUTER_EXP_IDS: set[str] = {
     "10_mlp_ready",
 }
 
-# Experiments that require expensive GPU training (vs cheap inference).
-TRAINING_EXP_IDS: set[str] = {"01", "03", "04", "10_regular", "10_cascade"}
-
-# Drop the non-paper multilabel stratified split variants from cross-comparison.
-EXCLUDED_CONDITION_KEYS: set[str] = {
-    "exp07_after_multilabel_stratified",
-    "exp07aug_after_multilabel_stratified",
+OOF_ML_ROUTER_EXP_IDS: set[str] = {
+    "06_svm_oof",
+    "06_svm_kernel_oof",
+    "06_nb_oof",
+    "06_lr_oof",
+    "06_rf_oof",
+    "06_mlp_oof",
 }
 
+# Experiments that require expensive GPU training (vs cheap inference).
+TRAINING_EXP_IDS: set[str] = {
+    "01",
+    "03",
+    "04",
+    "10_regular",
+    "10_cascade",
+    *OOF_ML_ROUTER_EXP_IDS,
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -408,6 +439,7 @@ def _apply_run_layout(
         COMPARISON_DIR = Path(output_dir).expanduser().resolve()
         COMPARISON_DIR.mkdir(parents=True, exist_ok=True)
         manifest["output_dir"] = str(COMPARISON_DIR)
+        os.environ["THESIS_CROSS_OUTPUT_DIR"] = str(COMPARISON_DIR)
 
     if subset_sentences is not None and subset_sentences > 0:
         data_dir = COMPARISON_DIR / "data"
@@ -1626,7 +1658,7 @@ def _exp07_augmented_ready() -> tuple[bool, str]:
         num_seeds = max(2, int(seeds_raw))
     except ValueError:
         num_seeds = 20
-    expected_seeds = [DEFAULT_BASE_SEED + i for i in range(num_seeds)]
+    expected_seeds = _seed_list(num_seeds)
 
     for vm in variants:
         seed_files = vm.get("seed_files")
@@ -1704,17 +1736,13 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
         num_seeds = max(2, int(seeds_raw))
     except ValueError:
         num_seeds = 20
-    seed_list = [DEFAULT_BASE_SEED + i for i in range(num_seeds)]
+    seed_list = _seed_list(num_seeds)
 
     meta07 = _load_exp07_meta()
     EXP07_AUG_SPLITS_DIR.mkdir(parents=True, exist_ok=True)
 
     aug_variants: list[dict[str, Any]] = []
-    all_variants = [
-        vm
-        for vm in list(meta07.get("variants", []))
-        if f"exp07_{vm.get('variant', '')}" not in EXCLUDED_CONDITION_KEYS
-    ]
+    all_variants = list(meta07.get("variants", []))
     total_aug_jobs = len(all_variants) * len(seed_list)
     aug_job_idx = 0
 
@@ -1872,8 +1900,6 @@ def _build_conditions(
         train_path = EXP07_SPLITS_DIR / vm["train_file"]
         eval_path = EXP07_SPLITS_DIR / vm["eval_file"]
         cond_key = f"exp07_{vm['variant']}"
-        if cond_key in EXCLUDED_CONDITION_KEYS:
-            continue
         if not train_path.exists() or not eval_path.exists():
             _log(f"WARNING: skipping exp07 variant {vm['variant']} (missing files)")
             continue
@@ -1934,12 +1960,12 @@ def _build_conditions(
             meta07_aug = _load_exp07_augmented_meta()
             for vm in meta07_aug.get("variants", []):
                 cond_key = f"exp07aug_{vm['variant']}"
-                if cond_key in EXCLUDED_CONDITION_KEYS:
-                    continue
                 seed_files = vm.get("seed_files") if isinstance(vm, dict) else None
                 canonical = None
                 if isinstance(seed_files, dict) and seed_files:
-                    canonical = seed_files.get(str(DEFAULT_BASE_SEED))
+                    env_seeds = _training_seeds_from_env()
+                    first_seed = env_seeds[0] if env_seeds else DEFAULT_BASE_SEED
+                    canonical = seed_files.get(str(first_seed))
                     if canonical is None:
                         canonical = next(iter(seed_files.values()))
                 if isinstance(canonical, dict):
@@ -1989,7 +2015,114 @@ def _build_conditions(
     return conditions
 
 
+def _training_seeds_file_path(explicit: str | Path | None = None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env_path = (os.environ.get("THESIS_CROSS_TRAINING_SEEDS_FILE") or "").strip()
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+    out_dir = (os.environ.get("THESIS_CROSS_OUTPUT_DIR") or "").strip()
+    base = Path(out_dir) if out_dir else COMPARISON_DIR
+    return base / TRAINING_SEEDS_FILENAME
+
+
+def _training_seeds_from_env() -> list[int] | None:
+    raw = (os.environ.get("THESIS_CROSS_TRAINING_SEEDS_JSON") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, list):
+        return [int(x) for x in parsed]
+    if isinstance(parsed, dict) and isinstance(parsed.get("seeds"), list):
+        return [int(x) for x in parsed["seeds"]]
+    return None
+
+
+def _generate_random_training_seeds(num_seeds: int, master_seed: int | None) -> list[int]:
+    import random
+
+    seen: set[int] = set()
+    seeds: list[int] = []
+    if master_seed is not None:
+        rng = random.Random(int(master_seed))
+        while len(seeds) < num_seeds:
+            candidate = rng.randint(1, 2_147_483_646)
+            if candidate not in seen:
+                seen.add(candidate)
+                seeds.append(candidate)
+    else:
+        sys_rng = random.SystemRandom()
+        while len(seeds) < num_seeds:
+            candidate = sys_rng.randint(1, 2_147_483_646)
+            if candidate not in seen:
+                seen.add(candidate)
+                seeds.append(candidate)
+    return seeds
+
+
+def resolve_persisted_training_seeds(
+    num_seeds: int,
+    *,
+    seeds_file: str | Path | None = None,
+    regenerate: bool = False,
+) -> list[int]:
+    """Load or create *num_seeds* training seeds; persist to JSON for stable reruns."""
+    path = _training_seeds_file_path(seeds_file)
+    if path.exists() and not regenerate:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"Could not read training seeds file {path}: {exc}") from exc
+        stored = data.get("seeds") if isinstance(data, dict) else data
+        if not isinstance(stored, list) or not stored:
+            raise RuntimeError(f"Invalid training seeds file (missing 'seeds' list): {path}")
+        seeds = [int(s) for s in stored]
+        if len(seeds) < num_seeds:
+            raise ValueError(
+                f"{path} has {len(seeds)} seeds but --num-seeds={num_seeds}. "
+                "Increase seeds in the file, lower --num-seeds, or pass --regenerate-training-seeds."
+            )
+        if len(seeds) > num_seeds:
+            _log(
+                f"Training seeds file has {len(seeds)} entries; using first {num_seeds} "
+                f"(--num-seeds)."
+            )
+            seeds = seeds[:num_seeds]
+        _log(f"Reusing {len(seeds)} training seeds from {path}")
+        return seeds
+
+    master_raw = (os.environ.get("THESIS_CROSS_SEEDS_MASTER") or "").strip()
+    master_seed: int | None = None
+    if master_raw:
+        try:
+            master_seed = int(master_raw)
+        except ValueError:
+            master_seed = None
+
+    seeds = _generate_random_training_seeds(num_seeds, master_seed)
+    payload = {
+        "num_seeds": num_seeds,
+        "seeds": seeds,
+        "master_seed": master_seed,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "note": (
+            "Stable training seeds for THESIS_SPLIT_SEED / paired runs. "
+            "Reuse this file across reruns; do not edit unless intentional."
+        ),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _log(f"Generated {len(seeds)} random training seeds -> {path}")
+    return seeds
+
+
 def _seed_list(num_seeds: int, base_seed: int = DEFAULT_BASE_SEED) -> list[int]:
+    cached = _training_seeds_from_env()
+    if cached is not None:
+        return cached[:num_seeds]
     return [base_seed + i for i in range(num_seeds)]
 
 
@@ -2213,6 +2346,10 @@ def run_comparison(
     output_dir: str | Path | None = None,
     subset_sentences: int | None = None,
     subset_seed: int = 42,
+    training_seeds_file: str | Path | None = None,
+    regenerate_training_seeds: bool = False,
+    calibrate_exp04_loss_weights: bool = False,
+    regenerate_exp04_loss_grid: bool = False,
 ) -> dict:
     """Run all (model × data-condition × experiment) combinations.
 
@@ -2242,10 +2379,13 @@ def run_comparison(
         checkpoint rows only.
     """
     from common import configure_network_environment
+    from core.runtime_env import describe_runtime
+
     configure_network_environment()
     from core.training_defaults import apply_fair_comparison_training_defaults
 
     _fair = apply_fair_comparison_training_defaults()
+    _log(describe_runtime())
 
     if subset_sentences is not None and subset_sentences > 0 and (exp07_source or "auto").strip().lower() == "saved":
         raise ValueError(
@@ -2263,7 +2403,7 @@ def run_comparison(
         f"Exp01 epochs={_fair.get('THESIS_NUM_EPOCHS')} lr={_fair.get('THESIS_LEARNING_RATE')} "
         f"wd={_fair.get('THESIS_TRAINER_WEIGHT_DECAY')} | "
         f"Exp04 epochs={_fair.get('THESIS_EXP04_EPOCHS')} "
-        "(cross_comparison_fair_training_overview.md)"
+        "(thesis_overview.md Part II)"
     )
 
     base_mode = (base_mode or "auto").strip().lower()
@@ -2283,10 +2423,28 @@ def run_comparison(
     os.environ["THESIS_EXP07_NUM_SEEDS"] = str(num_seeds)
     os.environ["THESIS_EXP08_NUM_SEEDS"] = str(num_seeds)
     os.environ["THESIS_DIRECT_SPLIT_RUNS"] = str(num_seeds)
-    seeds = _seed_list(num_seeds=num_seeds, base_seed=DEFAULT_BASE_SEED)
+    seeds = resolve_persisted_training_seeds(
+        num_seeds,
+        seeds_file=training_seeds_file,
+        regenerate=regenerate_training_seeds,
+    )
+    os.environ["THESIS_CROSS_TRAINING_SEEDS_JSON"] = json.dumps(seeds)
+    seeds_path = _training_seeds_file_path(training_seeds_file)
+    if not os.environ.get("THESIS_MODEL_SAVE_SEED") and seeds:
+        os.environ["THESIS_MODEL_SAVE_SEED"] = str(seeds[0])
+    try:
+        manifest_path = COMPARISON_DIR / "run_manifest.json"
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["training_seeds_file"] = str(seeds_path)
+        manifest["training_seeds"] = seeds
+        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        _log(f"WARNING: could not update run_manifest with training seeds: {exc}")
 
     if experiment_ids is None:
-        raw = (os.environ.get("THESIS_CROSS_EXPERIMENTS") or "01,04,05_ready,06_ready,06_svm_ready").strip()
+        raw = (os.environ.get("THESIS_CROSS_EXPERIMENTS") or "01,04,05_ready,06_ready,06_svm_oof").strip()
         experiment_ids = [x.strip() for x in raw.split(",") if x.strip()]
 
     unknown_experiments = [e for e in experiment_ids if e not in EXP_SCRIPTS]
@@ -2307,6 +2465,39 @@ def run_comparison(
         models.append(MODEL_REGISTRY[mk])
 
     COMPARISON_DIR.mkdir(parents=True, exist_ok=True)
+
+    needs_exp04_lambda = (
+        "04" in experiment_ids or any(e in OOF_ML_ROUTER_EXP_IDS for e in experiment_ids)
+    )
+    if (
+        calibrate_exp04_loss_weights
+        and needs_exp04_lambda
+        and not rebuild_from_checkpoint
+    ):
+        os.environ.setdefault("THESIS_SPLIT_SEED", str(seeds[0] if seeds else DEFAULT_BASE_SEED))
+        print(f"\n{'-'*60}")
+        print("  [PREP] Exp04 validation loss-weight grid (resume-aware)")
+        print(f"{'-'*60}")
+        try:
+            from exp04_loss_calibration import ensure_exp04_loss_weights_calibrated
+
+            cal = ensure_exp04_loss_weights_calibrated(
+                COMPARISON_DIR,
+                resume=resume,
+                force_rebuild=regenerate_exp04_loss_grid,
+                log_fn=_log,
+            )
+            manifest_path = COMPARISON_DIR / "run_manifest.json"
+            manifest: dict[str, Any] = {}
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["exp04_lambda_calibration"] = cal
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Exp04 loss-weight calibration failed: {exc}") from exc
+
     base_index_path = COMPARISON_DIR / "cross_comparison_base_ready_index.json"
     base_index = _load_base_index(base_index_path)
     base_mem: dict[str, dict[str, Any]] = {}
@@ -2662,6 +2853,16 @@ def run_comparison(
                             if reused_base_artifacts:
                                 metrics["status"] = "ok_reused_base"
 
+                        elif exp_id in OOF_ML_ROUTER_EXP_IDS:
+                            _set_presplit_env(cond["train_path"], cond["eval_path"])
+                            try:
+                                mod = _import_experiment(exp_id)
+                                payload = mod.run()
+                                metrics = _extract_metrics(payload)
+                                metrics["status"] = metrics.get("status") or "ok_oof_cv"
+                            finally:
+                                _clear_presplit_env()
+
                         elif exp_id in EXP10_READY_DEPENDENT_EXP_IDS:
                             base_entry, reused_base_artifacts = _ensure_base_artifacts_crf(
                                 model_id=model_id,
@@ -2724,7 +2925,7 @@ def run_comparison(
                     _log(f"  F1={_fmt(metrics.get('f1'))} ({elapsed:.1f}s)")
 
                     if not str(metrics.get("status", "")).startswith("error"):
-                        if is_training or exp_id in READY_ML_ROUTER_EXP_IDS:
+                        if is_training or exp_id in READY_ML_ROUTER_EXP_IDS or exp_id in OOF_ML_ROUTER_EXP_IDS:
                             try:
                                 from core.model_cleanup import cleanup_training_artifacts_if_enabled
 
@@ -2967,6 +3168,39 @@ def run_comparison(
     paired_tests_df = _paired_stats_rows(results_df)
     _log(f"Export: paired tests done ({len(paired_tests_df)} comparison(s))")
 
+    # ── 3d. Journal paper tables (1–3 seeds + OOF fold CV + loss weights)
+    journal_main_df = pd.DataFrame()
+    journal_oof_summary_df = pd.DataFrame()
+    journal_oof_long_df = pd.DataFrame()
+    journal_paired_fold_df = pd.DataFrame()
+    journal_loss_config_df = pd.DataFrame()
+    journal_lambda_grid_df = pd.DataFrame()
+    journal_guide_df = pd.DataFrame()
+    try:
+        from journal_results_export import (
+            build_journal_main_table,
+            collect_loss_config_rows,
+            collect_oof_fold_long,
+            journal_documentation_rows,
+            load_lambda_grid_selection,
+            paired_fold_method_comparison,
+            summarize_oof_for_paper,
+        )
+
+        journal_main_df = build_journal_main_table(grouped)
+        journal_oof_long_df = collect_oof_fold_long(results_df)
+        journal_oof_summary_df = summarize_oof_for_paper(journal_oof_long_df)
+        journal_paired_fold_df = paired_fold_method_comparison(journal_oof_long_df)
+        journal_loss_config_df = collect_loss_config_rows(results_df)
+        journal_lambda_grid_df = load_lambda_grid_selection(PROJECT_ROOT)
+        journal_guide_df = pd.DataFrame(journal_documentation_rows())
+        _log(
+            "Export: journal tables built "
+            f"(oof_folds={len(journal_oof_long_df)}, loss_config={len(journal_loss_config_df)})"
+        )
+    except Exception as exc:
+        _log(f"WARNING: journal export tables skipped: {exc}")
+
     # ── 4. Model comparison: same condition, head-to-head ────────────
     model_cmp_rows: list[dict] = []
     if len(models) == 2:
@@ -3086,7 +3320,21 @@ def run_comparison(
             {"Section": "Sheets", "Key": "deltas_exp07_aug",
              "Value": "Paired delta (split+augmentation − split only) for each exp07 variant per model per experiment"},
             {"Section": "Sheets", "Key": "paired_tests",
-             "Value": "Paired t-test + Wilcoxon signed-rank across shared seeds (mean±SD, test statistic, p-value, p<0.05)"},
+             "Value": "Paired t-test + Wilcoxon signed-rank across shared training seeds (use when num-seeds=2–3; not required for 5-fold OOF primary table)"},
+            {"Section": "Sheets", "Key": "journal_main_table",
+             "Value": "IEEE focus methods (exp01, exp04, exp06_*_oof): F1 mean±SD over 1–3 training seeds"},
+            {"Section": "Sheets", "Key": "journal_oof_fold_summary",
+             "Value": "OOF fusion: F1 mean±SD across 5 outer CV folds (primary generalization table)"},
+            {"Section": "Sheets", "Key": "journal_oof_folds_long",
+             "Value": "Per-fold F1 for OOF runs (paired fold comparisons, n=5)"},
+            {"Section": "Sheets", "Key": "journal_paired_fold_deltas",
+             "Value": "Mean ΔF1 between methods on matched outer folds"},
+            {"Section": "Sheets", "Key": "journal_loss_config",
+             "Value": "Exp04 λ_bio, λ_type from each run's loss_config sheet"},
+            {"Section": "Sheets", "Key": "journal_lambda_grid",
+             "Value": "Validation grid selection (experiment_04_loss_weight_grid.py)"},
+            {"Section": "Sheets", "Key": "journal_paper_guide",
+             "Value": "Pointer rows — see thesis_overview.md Part IV"},
             {"Section": "Sheets", "Key": "model_comparison",
              "Value": "Head-to-head F1 comparison per (experiment × condition) pair"},
             {"Section": "Sheets", "Key": "variant_summary",
@@ -3121,6 +3369,20 @@ def run_comparison(
             deltas07aug_df.to_excel(writer, sheet_name="deltas_exp07_aug", index=False)
         if not paired_tests_df.empty:
             paired_tests_df.to_excel(writer, sheet_name="paired_tests", index=False)
+        if not journal_main_df.empty:
+            journal_main_df.to_excel(writer, sheet_name="journal_main_table", index=False)
+        if not journal_oof_summary_df.empty:
+            journal_oof_summary_df.to_excel(writer, sheet_name="journal_oof_fold_summary", index=False)
+        if not journal_oof_long_df.empty:
+            journal_oof_long_df.to_excel(writer, sheet_name="journal_oof_folds_long", index=False)
+        if not journal_paired_fold_df.empty:
+            journal_paired_fold_df.to_excel(writer, sheet_name="journal_paired_fold_deltas", index=False)
+        if not journal_loss_config_df.empty:
+            journal_loss_config_df.to_excel(writer, sheet_name="journal_loss_config", index=False)
+        if not journal_lambda_grid_df.empty:
+            journal_lambda_grid_df.to_excel(writer, sheet_name="journal_lambda_grid", index=False)
+        if not journal_guide_df.empty:
+            journal_guide_df.to_excel(writer, sheet_name="journal_paper_guide", index=False)
         if not model_cmp_df.empty:
             model_cmp_df.to_excel(writer, sheet_name="model_comparison", index=False)
         if not variant_summary_df.empty:
@@ -3375,9 +3637,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--experiments",
-        default=(os.environ.get("THESIS_CROSS_EXPERIMENTS") or "01,04,05_ready,06_ready,06_svm_ready").strip(),
+        default=(os.environ.get("THESIS_CROSS_EXPERIMENTS") or "01,04,05_ready,06_ready,06_svm_oof").strip(),
         help=(
-            "Comma-separated experiment IDs (default: 01,04,05_ready,06_ready,06_svm_ready)."
+            "Comma-separated experiment IDs (default: 01,04,05_ready,06_ready,06_svm_oof)."
         ),
     )
     parser.add_argument(
@@ -3400,7 +3662,26 @@ if __name__ == "__main__":
         "--num-seeds",
         type=int,
         default=int((os.environ.get("THESIS_CROSS_NUM_SEEDS") or "20").strip()),
-        help="Seed count for exp07/exp08 (default: 20 for publication-quality significance).",
+        help=(
+            "Training seed count (default: 20 for full thesis; use 1–3 for IEEE journal — "
+            "see thesis_overview.md Part IV). Seeds persist in training_seeds.json."
+        ),
+    )
+    parser.add_argument(
+        "--training-seeds-file",
+        default=(os.environ.get("THESIS_CROSS_TRAINING_SEEDS_FILE") or "").strip(),
+        help=(
+            "JSON file listing stable training seeds (default: "
+            "{--output-dir}/training_seeds.json). Created on first run; reused on resume."
+        ),
+    )
+    parser.add_argument(
+        "--regenerate-training-seeds",
+        action="store_true",
+        help=(
+            "Discard/create a new random seed list (see THESIS_CROSS_SEEDS_MASTER). "
+            "Requires rebuilding exp07+aug caches if those seeds were used before."
+        ),
     )
     parser.add_argument(
         "--save-models",
@@ -3427,7 +3708,36 @@ if __name__ == "__main__":
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume from saved progress checkpoint and skip completed runs.",
+        help="Resume cross-comparison checkpoint and skip completed (model×exp×condition) runs.",
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Disable checkpoint resume (full rerun of pending comparison jobs).",
+    )
+    parser.add_argument(
+        "--journal-paper",
+        action="store_true",
+        help=(
+            "One-shot IEEE journal profile: calibrate Exp04 loss weights (resume-aware), "
+            "then run comparison with --resume. Sets defaults: 3 seeds, exp07 only, "
+            "01+04+06_svm_oof+06_rf_oof, skip augmentation, consolidated error analysis all."
+        ),
+    )
+    parser.add_argument(
+        "--calibrate-exp04-loss-weights",
+        action="store_true",
+        help="Before comparison, run/resume validation grid for THESIS_EXP04_LAMBDA_BIO/TYPE.",
+    )
+    parser.add_argument(
+        "--skip-exp04-loss-calibration",
+        action="store_true",
+        help="Do not run loss-weight grid (use existing env vars or pipeline defaults 10/5).",
+    )
+    parser.add_argument(
+        "--regenerate-exp04-loss-grid",
+        action="store_true",
+        help="Ignore cached lambda selection and re-run the full validation grid.",
     )
     parser.add_argument(
         "--rerun-experiments",
@@ -3529,11 +3839,28 @@ if __name__ == "__main__":
         _print_base_cache_summary(base_index_path)
         raise SystemExit(0)
 
+    journal_default_experiments = "01,04,06_svm_oof,06_rf_oof"
+
+    if args.journal_paper:
+        if not (os.environ.get("THESIS_CROSS_EXPERIMENTS") or "").strip():
+            args.experiments = journal_default_experiments
+        if not (os.environ.get("THESIS_CROSS_NUM_SEEDS") or "").strip():
+            args.num_seeds = 3
+        args.skip_augmentation = True
+        args.condition_sources = "exp07"
+        args.consolidated_error_analysis = "all"
+        args.calibrate_exp04_loss_weights = True
+        if not args.no_resume:
+            args.resume = True
+
     experiment_ids = [x.strip() for x in args.experiments.split(",") if x.strip()]
     model_keys = [x.strip() for x in args.models.split(",") if x.strip()]
     condition_sources = [x.strip() for x in args.condition_sources.split(",") if x.strip()]
     condition_keys = [x.strip() for x in args.condition_keys.split(",") if x.strip()]
     rerun_experiments = [x.strip() for x in args.rerun_experiments.split(",") if x.strip()]
+
+    calibrate_loss = bool(args.calibrate_exp04_loss_weights) and not args.skip_exp04_loss_calibration
+    resume_flag = bool(args.resume) and not args.no_resume
 
     # Default: free disk after training; metrics/error-analysis workbooks are kept.
     os.environ.setdefault("THESIS_DELETE_MODELS_AFTER_TRAIN", "1")
@@ -3546,7 +3873,7 @@ if __name__ == "__main__":
     if args.save_all_seed_models:
         os.environ.pop("THESIS_MODEL_SAVE_SEED", None)
     else:
-        os.environ["THESIS_MODEL_SAVE_SEED"] = str(DEFAULT_BASE_SEED)
+        os.environ.pop("THESIS_MODEL_SAVE_SEED", None)
 
     result = run_comparison(
         experiment_ids=experiment_ids,
@@ -3554,7 +3881,7 @@ if __name__ == "__main__":
         exp07_source=args.exp07_source,
         force_exp08=args.force_exp08,
         num_seeds=args.num_seeds,
-        resume=args.resume,
+        resume=resume_flag,
         checkpoint_file=(args.checkpoint_file or None),
         skip_augmentation=args.skip_augmentation,
         condition_sources=condition_sources,
@@ -3567,4 +3894,8 @@ if __name__ == "__main__":
         output_dir=(args.output_dir or None),
         subset_sentences=(args.subset_sentences if args.subset_sentences > 0 else None),
         subset_seed=args.subset_seed,
+        training_seeds_file=(args.training_seeds_file or None),
+        regenerate_training_seeds=bool(args.regenerate_training_seeds),
+        calibrate_exp04_loss_weights=calibrate_loss,
+        regenerate_exp04_loss_grid=bool(args.regenerate_exp04_loss_grid),
     )

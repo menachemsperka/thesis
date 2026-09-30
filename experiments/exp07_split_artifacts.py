@@ -22,7 +22,8 @@ from NERtraining import PrepDataSetNERTraining  # type: ignore
 
 BEFORE_VARIANT = "before_exp01_baseline"
 AFTER_VARIANT = "after_label_aware_split"
-VARIANT_MULTILABEL_STRATIFIED = "after_multilabel_stratified"
+# DEACTIVATED: legacy two-fold Sechidis-style split (superseded by VARIANT_MULTILABEL_ITERATIVE_PAPER).
+# VARIANT_MULTILABEL_STRATIFIED = "after_multilabel_stratified"
 VARIANT_MULTILABEL_ITERATIVE_PAPER = "after_multilabel_iterative_paper"
 
 BEFORE_DESCRIPTION = "Regular NER with DictaBERT"
@@ -31,21 +32,18 @@ AFTER_DESCRIPTION = "Statistical stratified sentence split preserving non-O labe
 ALL_VARIANTS = [
     BEFORE_VARIANT,
     AFTER_VARIANT,
-    VARIANT_MULTILABEL_STRATIFIED,
     VARIANT_MULTILABEL_ITERATIVE_PAPER,
 ]
 
 VARIANT_DESCRIPTIONS = {
     BEFORE_VARIANT: BEFORE_DESCRIPTION,
     AFTER_VARIANT: AFTER_DESCRIPTION,
-    VARIANT_MULTILABEL_STRATIFIED: "Iterative multilabel stratification (Sechidis et al., 2011): distributes each label proportionally across train/eval",
     VARIANT_MULTILABEL_ITERATIVE_PAPER: "Paper-style iterative stratification: rarest-label-first with tie-breaks by per-label need, then fold capacity, then random",
 }
 
 THESIS_LABELS = {
     BEFORE_VARIANT: "Baseline (simple random split)",
     AFTER_VARIANT: "Label-aware greedy",
-    VARIANT_MULTILABEL_STRATIFIED: "Multilabel stratified",
     VARIANT_MULTILABEL_ITERATIVE_PAPER: "Multilabel stratified (paper-style)",
 }
 
@@ -251,8 +249,15 @@ def _label_aware_split(sentences: list[dict], split_ratio: float, seed: int) -> 
     return _enforce_sentence_ratio(train, eval_, split_ratio, seed)
 
 
-def _multilabel_stratified_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    """Iterative multilabel stratification (Sechidis et al., 2011).
+def _multilabel_stratified_split_DEACTIVATED(
+    sentences: list[dict], split_ratio: float, seed: int
+) -> tuple[list[dict], list[dict]]:
+    """DEACTIVATED — ``after_multilabel_stratified`` (legacy two-fold Sechidis-style split).
+
+    Not generated or used in cross-comparison; kept for reference only.
+    Active variant: ``after_multilabel_iterative_paper`` via ``_multilabel_iterative_paper_split``.
+
+    Iterative multilabel stratification (Sechidis et al., 2011).
 
     Treats each sentence as a multilabel instance where labels are the unique
     non-O entity types present.  The algorithm processes labels from rarest to
@@ -351,7 +356,7 @@ def _multilabel_stratified_split(sentences: list[dict], split_ratio: float, seed
 def _multilabel_iterative_paper_split(sentences: list[dict], split_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
     """Paper-style iterative stratification (Sechidis et al., 2011 inspired).
 
-    Differences vs the existing multilabel stratified implementation:
+    Tie-breaking (paper-style):
     1. Priority label is chosen among labels with fewest remaining unassigned
        examples (random tie-break).
     2. Example assignment tie-breaks first by per-label remaining target,
@@ -455,9 +460,110 @@ def _multilabel_iterative_paper_split(sentences: list[dict], split_ratio: float,
 SPLIT_FNS = {
     BEFORE_VARIANT: _simple_random_split,
     AFTER_VARIANT: _label_aware_split,
-    VARIANT_MULTILABEL_STRATIFIED: _multilabel_stratified_split,
     VARIANT_MULTILABEL_ITERATIVE_PAPER: _multilabel_iterative_paper_split,
 }
+
+
+def multilabel_stratified_kfold_assignments(
+    sentences: list[dict],
+    n_folds: int,
+    seed: int,
+) -> list[int]:
+    """Assign each sentence to fold ``0 .. n_folds-1`` via iterative multilabel stratification.
+
+    K-fold iterative multilabel stratification (target ``1/K`` per fold). Used by router OOF
+    fusion (``fusion_router_oof_common``). Train/eval Exp07 splits use
+    ``_multilabel_iterative_paper_split`` instead.
+    """
+    items = list(sentences)
+    n_folds = max(2, int(n_folds))
+    if not items:
+        return []
+    if len(items) <= n_folds:
+        return [i % n_folds for i in range(len(items))]
+
+    rng = random.Random(seed)
+
+    label_sets: list[frozenset[str]] = []
+    for item in items:
+        labels = item.get("labels", []) if isinstance(item, dict) else []
+        non_o = frozenset(str(lb) for lb in labels if str(lb) != "O")
+        label_sets.append(non_o)
+
+    all_labels = sorted(set().union(*label_sets)) if label_sets else []
+    if not all_labels:
+        shuffled_idx = list(range(len(items)))
+        rng.shuffle(shuffled_idx)
+        assignments = [-1] * len(items)
+        for rank, idx in enumerate(shuffled_idx):
+            assignments[idx] = rank % n_folds
+        return assignments
+
+    proportions = [1.0 / n_folds] * n_folds
+    fold_targets = [max(1, int(len(items) * p)) for p in proportions]
+    total_target = sum(fold_targets)
+    if total_target != len(items):
+        fold_targets[-1] += len(items) - total_target
+
+    label_to_indices: dict[str, list[int]] = {lb: [] for lb in all_labels}
+    for i, ls in enumerate(label_sets):
+        for lb in ls:
+            label_to_indices[lb].append(i)
+
+    desired: dict[str, list[float]] = {}
+    for lb in all_labels:
+        n = len(label_to_indices[lb])
+        desired[lb] = [n * p for p in proportions]
+
+    assignments = [-1] * len(items)
+    current: dict[str, list[int]] = {lb: [0] * n_folds for lb in all_labels}
+    fold_counts = [0] * n_folds
+    processed: set[str] = set()
+
+    while len(processed) < len(all_labels):
+        min_label: str | None = None
+        min_unassigned = len(items) + 1
+        for lb in all_labels:
+            if lb in processed:
+                continue
+            unassigned = sum(1 for i in label_to_indices[lb] if assignments[i] == -1)
+            if unassigned < min_unassigned:
+                min_unassigned = unassigned
+                min_label = lb
+
+        if min_label is None:
+            break
+
+        for idx in label_to_indices[min_label]:
+            if assignments[idx] != -1:
+                continue
+            needs = []
+            for fold in range(n_folds):
+                need = 0.0
+                for lb in label_sets[idx]:
+                    need += desired[lb][fold] - current[lb][fold]
+                need += (fold_targets[fold] - fold_counts[fold]) * 0.01
+                need += rng.random() * 1e-6
+                needs.append(need)
+            best_fold = max(range(n_folds), key=lambda f: needs[f])
+            assignments[idx] = best_fold
+            fold_counts[best_fold] += 1
+            for lb in label_sets[idx]:
+                current[lb][best_fold] += 1
+
+        processed.add(min_label)
+
+    unassigned = [i for i in range(len(items)) if assignments[i] == -1]
+    rng.shuffle(unassigned)
+    for idx in unassigned:
+        best_fold = min(range(n_folds), key=lambda f: fold_counts[f])
+        assignments[idx] = best_fold
+        fold_counts[best_fold] += 1
+        for lb in label_sets[idx]:
+            current[lb][best_fold] += 1
+
+    return assignments
+
 
 def regenerate_exp07_splits(
     *,

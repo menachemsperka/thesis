@@ -95,8 +95,7 @@ Each variant uses the same Hebrew NER dataset but splits sentences into training
 |---|---------|----------|
 | 1 | Baseline (simple random) | Random sentence-level split; no label awareness |
 | 2 | Label-aware greedy | Greedy optimization: ensures non-O label distribution in train ≈ full dataset |
-| 3 | Multilabel stratified | Iterative multilabel stratification preserving per-label proportions in both folds |
-| 4 | Multilabel stratified (paper-style) | Same proportional goal as Method 3, but with paper-style tie-breaking: rare-label need, then fold capacity, then random |
+| 3 | Multilabel stratified (paper-style) | Iterative multilabel stratification with paper-style tie-breaking: rare-label need, then fold capacity, then random |
 
 **From Experiment 08 — LLM Data Augmentation (2 conditions):**
 
@@ -235,7 +234,7 @@ outputs/exp07/splits/           outputs/exp08/splits/
 │   train.json / eval.json      ├── baseline_eval.json
 ├── after_label_aware_split_    ├── augmented_train.json
 │   train.json / eval.json      └── augmented_eval.json
-├── after_multilabel_stratified_
+├── after_multilabel_iterative_paper_
 │   train.json / eval.json
 │
 └───────────┬───────────────────────┘

@@ -18,9 +18,9 @@ error_examples: reservoir sample (default 100,000 rows max).
 detailed_results: replaced by thesis-style summary tables (overall + per model),
 split by CRF vs non-CRF experiment families.
 
-Thesis method focus (four columns): Regular NER (exp01), Cascade NER (exp04),
-Linear SVM Fusion (exp06_svm_ready), RF Fusion (exp06_rf_ready). Other experiment
-IDs in a cross-comparison run are omitted from consolidated sheets.
+Journal / thesis method focus (four columns): Regular NER (exp01), Cascade NER (exp04),
+Linear SVM Fusion (exp06_svm_oof primary; exp06_svm_ready appendix), RF Fusion (exp06_rf_oof / exp06_rf_ready).
+Designed for 1–3 training seeds + 5-fold OOF router CV. Other experiment IDs are omitted from summary tabs.
 """
 from __future__ import annotations
 
@@ -78,6 +78,8 @@ ROUTER_ROUTES = (
 FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS = frozenset({
     "exp01",
     "exp04",
+    "exp06_svm_oof",
+    "exp06_rf_oof",
     "exp06_svm_ready",
     "exp06_rf_ready",
     "exp10_regular",
@@ -99,17 +101,17 @@ def _method_applies(experiment_id: str, method_name: str) -> bool:
     if method_name == "Cascade NER":
         return e in ("exp04", "exp10_cascade")
     if method_name == "Linear SVM Fusion":
-        return e in ("exp06_svm_ready", "exp10_svm_ready")
+        return e in ("exp06_svm_oof", "exp06_svm_ready", "exp10_svm_ready")
     if method_name == "RF Fusion":
-        return e in ("exp06_rf_ready", "exp10_rf_ready")
+        return e in ("exp06_rf_oof", "exp06_rf_ready", "exp10_rf_ready")
     return False
 
 
 def _router_label_for_experiment(experiment_id: str) -> str | None:
     e = str(experiment_id or "").strip().lower()
-    if e in ("exp06_svm_ready", "exp10_svm_ready"):
+    if e in ("exp06_svm_oof", "exp06_svm_ready", "exp10_svm_ready"):
         return "Linear SVM"
-    if e in ("exp06_rf_ready", "exp10_rf_ready"):
+    if e in ("exp06_rf_oof", "exp06_rf_ready", "exp10_rf_ready"):
         return "RF"
     return None
 
@@ -571,10 +573,11 @@ def _error_types_by_routing_table(
 
 def _thesis_statements_frame() -> pd.DataFrame:
     return pd.DataFrame({
-        "Thesis Statements": [
-            "• Add your thesis observations here...",
-            "• Key findings from the error analysis...",
-            "• Conclusions about model performance...",
+        "Journal / discussion notes (edit in Excel)": [
+            "• Main F1: cross_comparison → journal_oof_fold_summary (5-fold OOF) or journal_main_table (1–3 seeds).",
+            "• Loss weights: journal_lambda_grid + loss_config_summary; cite validation grid, not test tuning.",
+            "• Error patterns: compare Boundary vs Type columns across methods on summary_non_crf_* tabs.",
+            "• Routing: Router → Regular/Cascade accuracy on Linear SVM / RF OOF runs only.",
         ]
     })
 
@@ -778,9 +781,11 @@ def consolidate_workbooks_from_rows(
         {"section": "ABOUT", "item": "max_error_examples", "description": str(max_error_examples)},
         {"section": "ABOUT", "item": "thesis_method_focus",
          "description": (
-             "Regular NER (exp01), Cascade NER (exp04), Linear SVM Fusion (exp06_svm_ready), "
-             "RF Fusion (exp06_rf_ready); CRF analogs exp10_* when present"
+             "Regular NER (exp01), Cascade NER (exp04), Linear SVM Fusion (exp06_svm_oof), "
+             "RF Fusion (exp06_rf_oof); CRF analogs exp10_* when present"
          )},
+        {"section": "ABOUT", "item": "journal_guide",
+         "description": "thesis_overview.md Part IV — how to use this workbook + cross_comparison_*.xlsx"},
         {"section": "ABOUT", "item": "focus_experiment_ids",
          "description": ", ".join(sorted(FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS))},
         {"section": "ABOUT", "item": "summary_tabs",
@@ -843,6 +848,34 @@ def consolidate_workbooks_from_rows(
 
         for family in ("NON-CRF", "CRF"):
             _write_family_summary_tabs(writer, detail_acc, family)
+
+        try:
+            from journal_results_export import (
+                collect_loss_config_rows,
+                collect_oof_fold_long,
+                journal_documentation_rows,
+                load_lambda_grid_selection,
+                summarize_oof_for_paper,
+            )
+
+            rows_df = pd.DataFrame([r for r in rows if isinstance(r, dict)])
+            loss_cfg = collect_loss_config_rows(rows_df)
+            if not loss_cfg.empty:
+                loss_cfg.to_excel(writer, sheet_name="loss_config_summary", index=False)
+            oof_long = collect_oof_fold_long(rows_df)
+            if not oof_long.empty:
+                oof_long.to_excel(writer, sheet_name="oof_fold_metrics_long", index=False)
+                oof_sum = summarize_oof_for_paper(oof_long)
+                if not oof_sum.empty:
+                    oof_sum.to_excel(writer, sheet_name="oof_fold_summary", index=False)
+            grid_sel = load_lambda_grid_selection(PROJECT_ROOT)
+            if not grid_sel.empty:
+                grid_sel.to_excel(writer, sheet_name="lambda_grid_selection", index=False)
+            pd.DataFrame(journal_documentation_rows()).to_excel(
+                writer, sheet_name="journal_paper_guide", index=False
+            )
+        except Exception as exc:
+            print(f"[warn] journal supplement sheets skipped: {exc}", flush=True)
 
     print(f"[done] consolidated -> {output_path}", flush=True)
     return stats

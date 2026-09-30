@@ -2,6 +2,15 @@
 
 This folder is an organized, upload-ready project for running the thesis experiments with a single entry point.
 
+## Documentation
+
+| File | Use |
+|------|-----|
+| [`thesis_overview.md`](thesis_overview.md) | Full corpus (~300 sentences): pipeline, fair training, OOF fusion, journal workflow |
+| [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md) | 150-sentence pilot (`--subset-sentences 150`) |
+
+Legacy filenames (`theisis overview.md`, etc.) redirect to these two files.
+
 ## Included Experiments
 
 | ID | Name | Description |

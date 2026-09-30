@@ -79,6 +79,40 @@ def _extract_final_f1(metrics_path: Path) -> float | None:
     return float(final_rows.iloc[-1]["pipeline_span_f1"])
 
 
+def _read_loss_weights_from_metrics(metrics_path: Path) -> dict[str, float]:
+    defaults = {"lambda_bio": 10.0, "lambda_type": 5.0}
+    if not metrics_path.exists():
+        return defaults
+    try:
+        df = pd.read_excel(metrics_path, sheet_name="loss_config")
+        if df.empty:
+            return defaults
+        row = df.iloc[0]
+        return {
+            "lambda_bio": float(row.get("lambda_bio", defaults["lambda_bio"])),
+            "lambda_type": float(row.get("lambda_type", defaults["lambda_type"])),
+        }
+    except ValueError:
+        return defaults
+
+
+def _loss_weights_from_env() -> dict[str, float]:
+    bio_raw = (os.environ.get("THESIS_EXP04_LAMBDA_BIO") or "").strip()
+    type_raw = (os.environ.get("THESIS_EXP04_LAMBDA_TYPE") or "").strip()
+    out = {"lambda_bio": 10.0, "lambda_type": 5.0}
+    if bio_raw:
+        try:
+            out["lambda_bio"] = float(bio_raw)
+        except ValueError:
+            pass
+    if type_raw:
+        try:
+            out["lambda_type"] = float(type_raw)
+        except ValueError:
+            pass
+    return out
+
+
 def run() -> dict:
     model_name, is_local_model = configure_model_environment()
     seed_raw = (os.environ.get("THESIS_SPLIT_SEED") or "42").strip()
@@ -121,6 +155,9 @@ def run() -> dict:
 
     metrics_path = CORE_DIR / "cascaded_pipeline_results.xlsx"
     f1 = _extract_final_f1(metrics_path)
+    loss_weights = _read_loss_weights_from_metrics(metrics_path)
+    if not metrics_path.exists():
+        loss_weights = _loss_weights_from_env()
     exp_dir = get_experiment_output_dir("exp04")
     timestamp = now_timestamp()
     archived_metrics_path = exp_dir / f"cascaded_pipeline_results_{timestamp}.xlsx"
@@ -144,6 +181,9 @@ def run() -> dict:
             "split_seed": split_seed,
             "split_strategy": "statistical stratified sentence split preserving non-O label distribution (with best-effort train coverage)",
             "config_source": "core/auc_cascaded_pipeline.py: TRAINING_CONFIG + LOSS_CONFIG",
+            "lambda_bio": loss_weights["lambda_bio"],
+            "lambda_type": loss_weights["lambda_type"],
+            "loss_selection": "validation grid (experiment_04_loss_weight_grid.py) or THESIS_EXP04_LAMBDA_* env",
         },
         "metrics_file": str(archived_metrics_path),
         "f1": f1,

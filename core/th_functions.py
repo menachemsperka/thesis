@@ -135,12 +135,9 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
                 os.path.dirname(os.path.dirname(__file__)), "outputs", "trainer_checkpoints", unique_run_name
             )
             out_dir = output_path if output_path else default_out_dir
-        fp16_env = (os.environ.get("THESIS_TRAINER_FP16") or "").strip().lower()
-        if fp16_env:
-            use_fp16 = fp16_env in {"1", "true", "yes", "on"}
-        else:
-            # Default fp16 on Colab GPU (faster); set THESIS_TRAINER_FP16=0 if unstable.
-            use_fp16 = True
+        from core.runtime_env import trainer_fp16_enabled
+
+        use_fp16 = trainer_fp16_enabled()
         lr_env = (os.environ.get("THESIS_LEARNING_RATE") or "").strip()
         learning_rate = float(lr_env) if lr_env else 5e-5
         wd_env = (os.environ.get("THESIS_TRAINER_WEIGHT_DECAY") or "").strip()

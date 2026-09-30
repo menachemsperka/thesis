@@ -57,8 +57,15 @@ def apply_fair_comparison_training_defaults() -> dict[str, str]:
 
     Returns the effective string values for keys that were set or already present.
     """
+    from core.runtime_env import bootstrap_thesis_runtime, torch_cuda_available
+
+    bootstrap_thesis_runtime()
+    profile = dict(EXP01_PROFILE_ENV)
+    if not (os.environ.get("THESIS_TRAINER_FP16") or "").strip():
+        profile["THESIS_TRAINER_FP16"] = "1" if torch_cuda_available() else "0"
+
     effective: dict[str, str] = {}
-    for key, default in {**EXP01_PROFILE_ENV, **EXP04_PROFILE_ENV}.items():
+    for key, default in {**profile, **EXP04_PROFILE_ENV}.items():
         existing = (os.environ.get(key) or "").strip()
         if existing:
             effective[key] = existing

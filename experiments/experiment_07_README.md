@@ -15,7 +15,7 @@ problem:
 - after a random split, the training set may contain too few examples of the rare labels
 - the evaluation set may become easier or harder just because of the split
 
-So Experiment 07 compares **4 different sentence-level splitting methods**.
+So Experiment 07 compares **3 different sentence-level splitting methods**.
 Each method creates a 70% training set and a 30% evaluation set, but each one
 chooses the sentences in a different way.
 
@@ -95,7 +95,7 @@ then a good training split should have similar proportions.
 
 ---
 
-## The 4 Methods â€” Simple Explanations
+## The 3 Methods â€” Simple Explanations
 
 ## 1. Baseline (Simple Random)
 
@@ -177,56 +177,13 @@ more attractive and is more likely to be added.
 
 ---
 
-## 3. Multilabel Stratified (Iterative Stratification)
+## 3. Multilabel Stratified (Paper-Style Tie-Breaking)
 
 ### Main idea
 
 This method treats each sentence as a **multi-label example** and tries to keep
-the proportion of each label similar in both training and evaluation.
-
-It is closer to classical multilabel stratification methods than the earlier
-heuristics.
-
-### How it works
-
-1. Represent each sentence by the set of non-`O` labels it contains.
-2. Compute how many examples of each label should go to train (70%) and eval
-   (30%).
-3. Process labels from rarest to most common.
-4. For each sentence containing the current label, assign it to the side
-   (train/eval) that still needs those labels more.
-5. Update counts and continue until all labeled sentences are assigned.
-6. Fill any remaining unlabeled or unresolved sentences to meet exact split
-   size.
-
-### Why it helps
-
-It systematically reduces label-distribution drift between train and eval,
-especially for labels that co-occur with others.
-
-### Beginner example
-
-Suppose `B-CER` and `B-EVE` often appear together in a small number of
-sentences. A simple rare-label method may over-concentrate those sentences in
-train. Multilabel stratification tries to distribute those co-occurrences more
-proportionally across both sides.
-
-### In one sentence
-
-**This method uses iterative multilabel stratification to preserve per-label proportions in both training and evaluation.**
-
----
-
-## 4. Multilabel Stratified (Paper-Style Tie-Breaking)
-
-### Main idea
-
-This method follows the same overall philosophy as Method 3, but stays closer
-to the paper-style iterative stratification procedure.
-
-Like Method 3, it treats each sentence as a multi-label example and tries to
-keep label proportions similar across train and eval. The difference is in
-**how ties are resolved during assignment**.
+label proportions similar across train and eval, using a paper-style iterative
+stratification procedure (Sechidis et al., 2011 inspired).
 
 ### How it works
 
@@ -241,30 +198,14 @@ keep label proportions similar across train and eval. The difference is in
 5. Update label targets and fold capacities after each assignment.
 6. Finish unresolved sentences and rebalance to exact split size.
 
-### What is different from Method 3
-
-Method 3 scores a sentence by the **total remaining need across all labels in
-that sentence** and sends it to the fold with the larger summed need.
-
-Method 4 is more literal about the iterative-stratification tie-breaking logic:
-
-- it first focuses on the currently selected rare label,
-- then uses fold capacity as an explicit second tie-break,
-- and only then falls back to randomness.
-
-So the difference is not the overall goal, but the **decision rule used when a
-sentence could reasonably go to either fold**.
-
 ### Why this matters
 
-Method 4 is useful as a cleaner reference to the original iterative
-stratification idea. It helps test whether the more paper-like tie-breaking
-behavior produces better eval visibility or more stable per-label balance than
-Method 3.
+This variant is the **only** multilabel-stratified train/eval split in the
+pipeline: tie-breaking follows rare-label need, then fold capacity, then random.
 
 ### In one sentence
 
-**Method 4 aims for the same proportional label balance as Method 3, but uses a more paper-faithful tie-breaking rule during assignment.**
+**This method preserves per-label proportions in train and eval using paper-style iterative stratification tie-breaking.**
 
 ---
 
@@ -274,14 +215,13 @@ Method 3.
 |--------|-----------|---------------|---------------|
 | Baseline (simple random) | Easy random split | Very simple | Ignores label balance |
 | Label-aware greedy | Match train to full dataset | Good overall balance | May not emphasize very rare labels enough |
-| Multilabel stratified | Preserve proportional label distribution in both folds | Principled and balanced for multi-label co-occurrence | More complex and less intuitive to implement |
-| Multilabel stratified (paper-style) | Preserve proportional label distribution with paper-style tie-breaking | Closer to the original iterative stratification procedure | Still heuristic; may behave differently on co-occurring labels |
+| Multilabel stratified (paper-style) | Preserve proportional label distribution with paper-style tie-breaking | Closer to the original iterative stratification procedure | More complex; heuristic on co-occurring labels |
 
 ---
 
 ## A Good Way to Teach This in a Beginner Class
 
-You can explain the 4 methods in two teaching groups.
+You can explain the 3 methods in two teaching groups.
 
 ### Group A â€” The Simple Starting Point
 
@@ -292,8 +232,7 @@ This is what beginners already know: shuffle and split.
 ### Group B â€” Methods That Try to Make Training Better
 
 - **Method 2: Label-aware greedy**
-- **Method 3: Multilabel stratified**
-- **Method 4: Multilabel stratified (paper-style)**
+- **Method 3: Multilabel stratified (paper-style)**
 
 These methods try to improve training quality by choosing better sentences.
 
@@ -317,12 +256,11 @@ Students should remember these core messages:
 
 ## Short Teaching Summary
 
-Here is a short classroom summary of all 4 methods:
+Here is a short classroom summary of all 3 methods:
 
 1. **Baseline random**: just shuffle and split.
 2. **Label-aware greedy**: choose sentences that make training look like the full dataset.
-3. **Multilabel stratified**: distribute each label proportionally across train and evaluation.
-4. **Multilabel stratified (paper-style)**: same goal as Method 3, but with more explicit paper-style tie-breaking during assignment.
+3. **Multilabel stratified (paper-style)**: distribute each label proportionally across train and evaluation with paper-style tie-breaking.
 
 ---
 

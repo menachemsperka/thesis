@@ -241,10 +241,12 @@ def train_and_evaluate_bert_crf(model, ds_train, ds_eval, data_collator, tokeniz
             )
         )
         sig = inspect.signature(TrainingArguments.__init__)
+        from core.runtime_env import trainer_fp16_enabled
+
         colab_kwargs: dict[str, Any] = {
             "output_dir": default_out_dir,
             "num_train_epochs": num_train_epochs,
-            "fp16": True,
+            "fp16": trainer_fp16_enabled(),
         }
         if disk_minimal:
             colab_kwargs["save_strategy"] = "no"
