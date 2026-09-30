@@ -222,8 +222,10 @@ def train_and_evaluate_model(model, ds_train, ds_eval, data_collator, tokenizer,
     class_weights = (
         _class_weights_from_dataset(ds_train, len(label_list)) if use_class_weights else None
     )
-    trainer_cls = WeightedTokenClassificationTrainer if class_weights is not None else Trainer
-    trainer = trainer_cls(class_weights=class_weights, **trainer_kwargs)
+    if class_weights is not None:
+        trainer = WeightedTokenClassificationTrainer(class_weights=class_weights, **trainer_kwargs)
+    else:
+        trainer = Trainer(**trainer_kwargs)
 
     if is_colab and num_train_epochs > 0 and (os.environ.get("THESIS_DEBUG") or "").strip().lower() in {
         "1", "true", "yes", "on",
