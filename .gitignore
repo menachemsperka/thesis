@@ -67,6 +67,8 @@ models/
 *.pkl
 *.pickle
 !data/ner_dataset.pkl
+!data/ner_dataset_full.pkl
+!data/ner_dataset_150_seed42.pkl
 
 # Saved model artifacts
 *.pt

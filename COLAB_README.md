@@ -84,7 +84,11 @@ os.environ["WANDB_DISABLED"] = "true"
 # os.environ["THESIS_NUM_EPOCHS"] = "5"
 ```
 
-## 5. Running Experiments
+## 5. Pre-built notebook (150 sentences, 10 seeds, journal profile)
+
+Upload or open from the repo: [`colab_150_sentences_journal_10seeds.ipynb`](colab_150_sentences_journal_10seeds.ipynb) — public clone, no PAT, runner invoked via one-argument-per-line `argv` list.
+
+## 6. Running Experiments
 
 Finally, you can run your experiments directly through shell commands (by prefixing with `!`) or interactively in Notebook cells.
 

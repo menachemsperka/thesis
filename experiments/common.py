@@ -17,6 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 DATA_DIR = PROJECT_ROOT / "data"
 NER_DATASET_PKL = "ner_dataset.pkl"
+NER_DATASET_FULL_PKL = "ner_dataset_full.pkl"
+NER_DATASET_150_PKL = "ner_dataset_150_seed42.pkl"
 NER_DATASET_XLSX = "ner_dataset.xlsx"
 NER_DATASET_CSV = "ner_dataset.csv"
 DEBUG = False
