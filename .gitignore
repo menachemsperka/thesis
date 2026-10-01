@@ -36,6 +36,7 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+colab_150_sentences_journal_10seeds.ipynb
 
 # IDE/editor
 .vscode/
