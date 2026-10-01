@@ -88,6 +88,13 @@ FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS = frozenset({
     "exp10_rf_ready",
 })
 
+# exp01 / exp10_regular write a *sentence*-level "detailed_results" sheet
+# (one row per sentence; true/predicted labels are space-joined strings in
+# "true_labels" / "predicted_labels"). The real per-token "true_label" /
+# "pred_label" columns used for token-level error analysis live in the
+# "token_predictions" sheet instead — use that one for these experiment ids.
+SENTENCE_LEVEL_DETAILED_RESULTS_EXP_IDS = frozenset({"exp01", "exp10_regular"})
+
 
 def _in_thesis_error_analysis_focus(experiment_id: str) -> bool:
     return str(experiment_id or "").strip().lower() in FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS
@@ -272,7 +279,7 @@ def _cascade_label_from_row(row: pd.Series) -> str | None:
     return None
 
 
-def _true_label_series(df: pd.DataFrame) -> pd.Series:
+def _true_label_series(df: pd.DataFrame, context: str = "") -> pd.Series:
     if "true_label" in df.columns:
         return df["true_label"].astype(str)
     if "true_bio" in df.columns and "true_etype" in df.columns:
@@ -282,6 +289,12 @@ def _true_label_series(df: pd.DataFrame) -> pd.Series:
             else f"{r['true_bio']}-{r['true_etype']}",
             axis=1,
         )
+    print(
+        f"[warn] _true_label_series: no true_label/true_bio+true_etype columns found "
+        f"({context}); columns={list(df.columns)[:12]} — defaulting every row to 'O' "
+        f"(this silently zeroes out error counts for this sheet).",
+        flush=True,
+    )
     return pd.Series(["O"] * len(df), index=df.index)
 
 
@@ -310,11 +323,12 @@ def _accumulate_detailed(
         str(meta.get("condition_group_short") or meta.get("condition_short") or ""),
         str(meta.get("data_source") or ""),
     )
-    true_labels = _true_label_series(df)
-    n_tokens = int(len(df))
-
     exp_id = str(meta.get("experiment_id", ""))
     e_low = exp_id.strip().lower()
+    true_labels = _true_label_series(
+        df, context=f"experiment_id={exp_id} source_file={meta.get('source_file')}"
+    )
+    n_tokens = int(len(df))
     router_label = _router_label_for_experiment(exp_id)
 
     # Token denominators: one baseline NER run per (model, split), not repeated per fusion experiment.
@@ -336,6 +350,13 @@ def _accumulate_detailed(
         else:
             col = _pick_pred_column(df, col_candidates)
             if col is None:
+                print(
+                    f"[warn] _accumulate_detailed: '{method_name}' expected one of "
+                    f"{col_candidates} but found none in columns={list(df.columns)[:12]} "
+                    f"(experiment_id={exp_id}, source_file={meta.get('source_file')}) — "
+                    "skipping this method for this sheet.",
+                    flush=True,
+                )
                 continue
             preds = df[col].astype(str).tolist()
 
@@ -733,6 +754,7 @@ def consolidate_workbooks_from_rows(
             continue
 
         exp_id = str(meta.get("experiment_id", ""))
+        e_low = exp_id.strip().lower()
         in_focus = _in_thesis_error_analysis_focus(exp_id)
 
         if in_focus:
@@ -765,12 +787,20 @@ def consolidate_workbooks_from_rows(
                 except Exception:
                     pass
 
-            if "detailed_results" in xl.sheet_names:
+            # exp01 / exp10_regular: "detailed_results" is sentence-level (space-joined
+            # label strings); the real per-token true_label/pred_label columns are in
+            # "token_predictions" instead. Everything else (exp04/exp10_cascade,
+            # exp06_*/exp10_* fusion runs) already has a token-level "detailed_results".
+            detail_sheet_name = "detailed_results"
+            if e_low in SENTENCE_LEVEL_DETAILED_RESULTS_EXP_IDS and "token_predictions" in xl.sheet_names:
+                detail_sheet_name = "token_predictions"
+
+            if detail_sheet_name in xl.sheet_names:
                 try:
-                    dr = pd.read_excel(path, sheet_name="detailed_results")
+                    dr = pd.read_excel(path, sheet_name=detail_sheet_name)
                     _accumulate_detailed(detail_acc, dr, meta)
                 except Exception as exc:
-                    print(f"[warn] detailed_results summary skipped for {path.name}: {exc}", flush=True)
+                    print(f"[warn] {detail_sheet_name} summary skipped for {path.name}: {exc}", flush=True)
 
     stats = {"workbooks": n_files, "error_example_sample": len(reservoir.items)}
 
