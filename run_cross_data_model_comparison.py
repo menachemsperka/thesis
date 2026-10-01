@@ -3671,10 +3671,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-seeds",
         type=int,
-        default=int((os.environ.get("THESIS_CROSS_NUM_SEEDS") or "20").strip()),
+        default=None,
         help=(
             "Training seed count (default: 20 for full thesis; use 1–3 for IEEE journal — "
-            "see thesis_overview.md Part IV). Seeds persist in training_seeds.json."
+            "see thesis_overview.md Part IV). Seeds persist in training_seeds.json. "
+            "Leave unset to get the default; --journal-paper only overrides the *default* "
+            "(3 seeds) and never clobbers an explicitly-passed value."
         ),
     )
     parser.add_argument(
@@ -3849,18 +3851,22 @@ if __name__ == "__main__":
         _print_base_cache_summary(base_index_path)
         raise SystemExit(0)
 
+    # Was --num-seeds explicitly passed on the CLI? (default=None lets us tell this
+    # apart from "fell through to the default", even when that default is also 20 —
+    # comparing resolved values can't distinguish "explicit 20" from "default 20".)
+    num_seeds_explicit = args.num_seeds is not None
+    if args.num_seeds is None:
+        args.num_seeds = int((os.environ.get("THESIS_CROSS_NUM_SEEDS") or "20").strip() or "20")
+
     journal_default_experiments = "01,04,06_svm_oof,06_rf_oof"
 
     if args.journal_paper:
         if not (os.environ.get("THESIS_CROSS_EXPERIMENTS") or "").strip():
             args.experiments = journal_default_experiments
-        # Journal default is 3 seeds unless CLI/env already set a different count.
-        _parser_default_seeds = int(
-            (os.environ.get("THESIS_CROSS_NUM_SEEDS") or "20").strip() or "20"
-        )
-        if not (os.environ.get("THESIS_CROSS_NUM_SEEDS") or "").strip():
-            if args.num_seeds == _parser_default_seeds:
-                args.num_seeds = 3
+        # Journal default is 3 seeds, but only when the caller never explicitly
+        # requested a seed count via --num-seeds or THESIS_CROSS_NUM_SEEDS.
+        if not num_seeds_explicit and not (os.environ.get("THESIS_CROSS_NUM_SEEDS") or "").strip():
+            args.num_seeds = 3
         args.skip_augmentation = True
         args.condition_sources = "exp07"
         args.consolidated_error_analysis = "all"
