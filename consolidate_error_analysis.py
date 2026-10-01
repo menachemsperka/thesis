@@ -18,9 +18,13 @@ error_examples: reservoir sample (default 100,000 rows max).
 detailed_results: replaced by thesis-style summary tables (overall + per model),
 split by CRF vs non-CRF experiment families.
 
-Journal / thesis method focus (four columns): Regular NER (exp01), Cascade NER (exp04),
-Linear SVM Fusion (exp06_svm_oof primary; exp06_svm_ready appendix), RF Fusion (exp06_rf_oof / exp06_rf_ready).
-Designed for 1–3 training seeds + 5-fold OOF router CV. Other experiment IDs are omitted from summary tabs.
+Journal / thesis method focus (eight columns): Regular NER (exp01), Cascade NER (exp04),
+Confidence Fusion (exp06_ready), Linear SVM Fusion (exp06_svm_oof primary; exp06_svm_ready
+appendix), RBF SVM Fusion (exp06_svm_kernel_oof / exp06_svm_kernel_ready), Naive Bayes Fusion
+(exp06_nb_oof / exp06_nb_ready), Logistic Regression Fusion (exp06_lr_oof / exp06_lr_ready),
+RF Fusion (exp06_rf_oof / exp06_rf_ready). MLP Fusion (exp06_mlp_oof / exp06_mlp_ready) is also
+recognized if that experiment is run. Designed for 1–3 training seeds + 5-fold OOF router CV.
+Other experiment IDs are omitted from summary tabs.
 """
 from __future__ import annotations
 
@@ -74,18 +78,32 @@ ROUTER_ROUTES = (
     "Router → Cascade",
 )
 
-# Thesis error-analysis focus: direct NER, cascade, linear SVM router, RF router only.
+# Thesis error-analysis focus: direct NER, cascade, and every fusion/router variant.
 FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS = frozenset({
     "exp01",
     "exp04",
+    "exp06_ready",
     "exp06_svm_oof",
-    "exp06_rf_oof",
     "exp06_svm_ready",
+    "exp06_svm_kernel_oof",
+    "exp06_svm_kernel_ready",
+    "exp06_nb_oof",
+    "exp06_nb_ready",
+    "exp06_lr_oof",
+    "exp06_lr_ready",
+    "exp06_rf_oof",
     "exp06_rf_ready",
+    "exp06_mlp_oof",
+    "exp06_mlp_ready",
     "exp10_regular",
     "exp10_cascade",
+    "exp10_fusion_ready",
     "exp10_svm_ready",
+    "exp10_svm_kernel_ready",
+    "exp10_nb_ready",
+    "exp10_lr_ready",
     "exp10_rf_ready",
+    "exp10_mlp_ready",
 })
 
 # exp01 / exp10_regular write a *sentence*-level "detailed_results" sheet
@@ -100,6 +118,30 @@ def _in_thesis_error_analysis_focus(experiment_id: str) -> bool:
     return str(experiment_id or "").strip().lower() in FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS
 
 
+# Each fusion method name maps to the set of (OOF, ready, CRF-ready) experiment ids
+# that should be pooled into that column. Add new rows here as new routers are run.
+_FUSION_METHOD_EXP_IDS: dict[str, tuple[str, ...]] = {
+    "Confidence Fusion": ("exp06_ready", "exp10_fusion_ready"),
+    "Linear SVM Fusion": ("exp06_svm_oof", "exp06_svm_ready", "exp10_svm_ready"),
+    "RBF SVM Fusion": ("exp06_svm_kernel_oof", "exp06_svm_kernel_ready", "exp10_svm_kernel_ready"),
+    "Naive Bayes Fusion": ("exp06_nb_oof", "exp06_nb_ready", "exp10_nb_ready"),
+    "Logistic Regression Fusion": ("exp06_lr_oof", "exp06_lr_ready", "exp10_lr_ready"),
+    "RF Fusion": ("exp06_rf_oof", "exp06_rf_ready", "exp10_rf_ready"),
+    "MLP Fusion": ("exp06_mlp_oof", "exp06_mlp_ready", "exp10_mlp_ready"),
+}
+
+# Router label used in the routing-decision sections (confidence fusion has no
+# trained classifier router, so it is intentionally excluded here).
+_ROUTER_LABEL_BY_METHOD: dict[str, str] = {
+    "Linear SVM Fusion": "Linear SVM",
+    "RBF SVM Fusion": "RBF SVM",
+    "Naive Bayes Fusion": "Naive Bayes",
+    "Logistic Regression Fusion": "Logistic Regression",
+    "RF Fusion": "RF",
+    "MLP Fusion": "MLP",
+}
+
+
 def _method_applies(experiment_id: str, method_name: str) -> bool:
     """Map each run to at most one comparison column (no duplicate Regular/Cascade from fusion runs)."""
     e = str(experiment_id or "").strip().lower()
@@ -107,19 +149,14 @@ def _method_applies(experiment_id: str, method_name: str) -> bool:
         return e in ("exp01", "exp10_regular")
     if method_name == "Cascade NER":
         return e in ("exp04", "exp10_cascade")
-    if method_name == "Linear SVM Fusion":
-        return e in ("exp06_svm_oof", "exp06_svm_ready", "exp10_svm_ready")
-    if method_name == "RF Fusion":
-        return e in ("exp06_rf_oof", "exp06_rf_ready", "exp10_rf_ready")
-    return False
+    return e in _FUSION_METHOD_EXP_IDS.get(method_name, ())
 
 
 def _router_label_for_experiment(experiment_id: str) -> str | None:
     e = str(experiment_id or "").strip().lower()
-    if e in ("exp06_svm_oof", "exp06_svm_ready", "exp10_svm_ready"):
-        return "Linear SVM"
-    if e in ("exp06_rf_oof", "exp06_rf_ready", "exp10_rf_ready"):
-        return "RF"
+    for method_name, router_label in _ROUTER_LABEL_BY_METHOD.items():
+        if e in _FUSION_METHOD_EXP_IDS.get(method_name, ()):
+            return router_label
     return None
 
 ROUTING_ERROR_TYPES = (
@@ -140,8 +177,13 @@ ERROR_ROW_ORDER = (
 METHOD_SPECS = (
     ("Regular NER", ("regular_pred_label", "pred_label", "predicted_label")),
     ("Cascade NER", ("cascade_pred_label",)),
+    ("Confidence Fusion", ("fused_pred_label",)),
     ("Linear SVM Fusion", ("fused_pred_label",)),
+    ("RBF SVM Fusion", ("fused_pred_label",)),
+    ("Naive Bayes Fusion", ("fused_pred_label",)),
+    ("Logistic Regression Fusion", ("fused_pred_label",)),
     ("RF Fusion", ("fused_pred_label",)),
+    ("MLP Fusion", ("fused_pred_label",)),
 )
 
 
@@ -340,7 +382,9 @@ def _accumulate_detailed(
     for method_name, col_candidates in METHOD_SPECS:
         if not _method_applies(exp_id, method_name):
             continue
-        if method_name in ("Linear SVM Fusion", "RF Fusion") and "fused_pred_label" not in df.columns:
+        if col_candidates == ("fused_pred_label",) and "fused_pred_label" not in df.columns:
+            # Fusion columns are all keyed off a single "fused_pred_label" column;
+            # skip quietly instead of warning when a run simply predates that column.
             continue
         preds: list[str] = []
         if method_name == "Cascade NER":
@@ -428,7 +472,7 @@ def _error_type_table(acc: _DetailAccumulator, family: str, model_scope: str) ->
 
 
 def _type_confusion_table(acc: _DetailAccumulator, family: str, model_scope: str, top_n: int = 14) -> pd.DataFrame:
-    """Top entity confusions across Regular / Cascade / Linear SVM / RF columns."""
+    """Top entity confusions across Regular / Cascade / all fusion-method columns."""
     pooled: Counter = Counter()
     for (slice_key, conf), n in acc.type_confusion.items():
         fam, scope, _meth = slice_key
@@ -598,7 +642,9 @@ def _thesis_statements_frame() -> pd.DataFrame:
             "• Main F1: cross_comparison → journal_oof_fold_summary (5-fold OOF) or journal_main_table (1–3 seeds).",
             "• Loss weights: journal_lambda_grid + loss_config_summary; cite validation grid, not test tuning.",
             "• Error patterns: compare Boundary vs Type columns across methods on summary_non_crf_* tabs.",
-            "• Routing: Router → Regular/Cascade accuracy on Linear SVM / RF OOF runs only.",
+            "• Routing: Router → Regular/Cascade accuracy on each ML-router OOF run "
+            "(Linear SVM / RBF SVM / Naive Bayes / Logistic Regression / RF / MLP); "
+            "Confidence Fusion has no trained router, so it has no routing section.",
         ]
     })
 
@@ -613,8 +659,9 @@ def _build_scope_summary_sections(
     sections: list[tuple[str, pd.DataFrame]] = []
 
     err_tbl = _error_type_table(acc, family, model_scope)
+    method_list = " vs ".join(m for m, _ in METHOD_SPECS)
     sections.append((
-        f"Error Analysis: Regular vs Cascade vs Linear SVM vs RF ({family} — {scope_label})",
+        f"Error Analysis: {method_list} ({family} — {scope_label})",
         err_tbl if not err_tbl.empty else _empty_section_note("error analysis"),
     ))
 
@@ -624,7 +671,7 @@ def _build_scope_summary_sections(
         tc if not tc.empty else _empty_section_note("type error by entity"),
     ))
 
-    for router_label in ("Linear SVM", "RF"):
+    for router_label in _ROUTER_LABEL_BY_METHOD.values():
         router_tbl = _router_table(
             acc, family, model_scope, f"{router_label} Router Results", router_label=router_label,
         )
@@ -811,8 +858,10 @@ def consolidate_workbooks_from_rows(
         {"section": "ABOUT", "item": "max_error_examples", "description": str(max_error_examples)},
         {"section": "ABOUT", "item": "thesis_method_focus",
          "description": (
-             "Regular NER (exp01), Cascade NER (exp04), Linear SVM Fusion (exp06_svm_oof), "
-             "RF Fusion (exp06_rf_oof); CRF analogs exp10_* when present"
+             "Regular NER (exp01), Cascade NER (exp04), Confidence Fusion (exp06_ready), "
+             "Linear SVM Fusion (exp06_svm_oof), RBF SVM Fusion (exp06_svm_kernel_oof), "
+             "Naive Bayes Fusion (exp06_nb_oof), Logistic Regression Fusion (exp06_lr_oof), "
+             "RF Fusion (exp06_rf_oof), MLP Fusion (exp06_mlp_oof); CRF analogs exp10_* when present"
          )},
         {"section": "ABOUT", "item": "journal_guide",
          "description": "thesis_overview.md Part IV — how to use this workbook + cross_comparison_*.xlsx"},
