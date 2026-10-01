@@ -131,9 +131,26 @@ def suppress_output_if_needed(debug: bool | None = None):
         yield
 
 
-def ensure_outputs_dir() -> Path:
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+def _effective_outputs_dir() -> Path:
+    """Resolve the per-experiment outputs root.
+
+    Defaults to ``<repo>/outputs`` (ephemeral on Colab, under ``/content/thesis``).
+    When ``THESIS_EXPERIMENTS_OUTPUT_DIR`` is set (e.g. by
+    ``run_cross_data_model_comparison.py --output-dir`` on Colab), per-run
+    workbooks are written there instead — typically a Drive-backed path — so
+    they survive a Colab disconnect/reconnect instead of vanishing with the
+    ephemeral runtime disk.
+    """
+    override = (os.environ.get("THESIS_EXPERIMENTS_OUTPUT_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
     return OUTPUTS_DIR
+
+
+def ensure_outputs_dir() -> Path:
+    base = _effective_outputs_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def now_timestamp() -> str:
@@ -141,8 +158,8 @@ def now_timestamp() -> str:
 
 
 def get_experiment_output_dir(experiment_id: str) -> Path:
-    ensure_outputs_dir()
-    exp_dir = OUTPUTS_DIR / experiment_id
+    base = ensure_outputs_dir()
+    exp_dir = base / experiment_id
     exp_dir.mkdir(parents=True, exist_ok=True)
     return exp_dir
 

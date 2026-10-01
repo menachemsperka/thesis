@@ -441,6 +441,16 @@ def _apply_run_layout(
         manifest["output_dir"] = str(COMPARISON_DIR)
         os.environ["THESIS_CROSS_OUTPUT_DIR"] = str(COMPARISON_DIR)
 
+        # Per-run exp01/04/06/10 workbooks (experiments/common.py:get_experiment_output_dir)
+        # otherwise default to "<repo>/outputs" — ephemeral on Colab (/content/thesis).
+        # Redirect them under the same (typically Drive-backed) output_dir so a Colab
+        # disconnect/reconnect no longer destroys every per-run detailed_results /
+        # token_predictions workbook the error-analysis consolidation depends on.
+        experiments_output_dir = COMPARISON_DIR / "experiment_outputs"
+        experiments_output_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["THESIS_EXPERIMENTS_OUTPUT_DIR"] = str(experiments_output_dir)
+        manifest["experiments_output_dir"] = str(experiments_output_dir)
+
     if subset_sentences is not None and subset_sentences > 0:
         data_dir = COMPARISON_DIR / "data"
         subset_csv = data_dir / f"ner_dataset_{subset_sentences}_seed{subset_seed}.csv"
