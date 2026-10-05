@@ -33,6 +33,7 @@ the single file you write the paper from:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -332,6 +333,27 @@ def reconstruct_fold_map(
     return {idx + 1: fold for idx, fold in enumerate(assignments)}
 
 
+_SEED_SUFFIX_RE = re.compile(r"__seed-?\d+$")
+_CONDITION_PREFIXES = ("exp07aug_", "exp07_", "exp08_")
+
+
+def split_stems_for_condition(condition: str) -> list[str]:
+    """Candidate split-JSON stems for a runner condition key, most specific first.
+
+    The runner reports split_condition as f"{base_condition_key}__seed{seed}" where the
+    base key prefixes the source (``exp07_after_label_aware_split``), but the split JSONs
+    on disk are named after the bare variant (``after_label_aware_split_train.json``).
+    """
+    base = _SEED_SUFFIX_RE.sub("", condition)
+    stems = [s for s in (condition, base) if s]
+    for prefix in _CONDITION_PREFIXES:
+        if base.startswith(prefix):
+            stems.append(base[len(prefix):])
+            break
+    seen: set[str] = set()
+    return [s for s in stems if s and not (s in seen or seen.add(s))]
+
+
 def fold_map_for_run(
     meta: dict,
     args: argparse.Namespace,
@@ -347,8 +369,18 @@ def fold_map_for_run(
     if args.corpus_train_json and args.corpus_eval_json:
         train_json, eval_json = args.corpus_train_json, args.corpus_eval_json
     elif args.splits_dir:
-        train_json = args.splits_dir / f"{condition}_train.json"
-        eval_json = args.splits_dir / f"{condition}_eval.json"
+        stems = split_stems_for_condition(condition)
+        pairs = [
+            (args.splits_dir / f"{stem}_train.json", args.splits_dir / f"{stem}_eval.json")
+            for stem in stems
+        ]
+        found = next(((t, e) for t, e in pairs if t.is_file() and e.is_file()), None)
+        if found is None:
+            tried = ", ".join(t.name for t, _ in pairs)
+            print(f"  ! no split JSONs for condition '{condition}' in {args.splits_dir} "
+                  f"(tried: {tried})")
+            return None
+        train_json, eval_json = found
     else:
         return None
 
