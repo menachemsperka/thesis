@@ -576,6 +576,7 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
                     fold_rows.append({
                         "model": model,
                         "split_condition": condition,
+                        "base_split_condition": base_condition(condition),
                         "seed": seed,
                         "router": router,
                         "outer_fold": int(fold),
@@ -644,12 +645,12 @@ def _holm_adjust(pvals: np.ndarray) -> np.ndarray:
 
 
 def apply_holm_within_families(tests: pd.DataFrame) -> pd.DataFrame:
-    """Holm-adjust across every contrast sharing a (model, split_condition)."""
+    """Holm-adjust across every contrast sharing a (model, base_split_condition)."""
     if tests.empty:
         return tests
 
     out = tests.copy()
-    family_cols = ["model", "split_condition"]
+    family_cols = ["model", "base_split_condition"]
     out["holm_family"] = out[family_cols].astype(str).agg(" | ".join, axis=1)
 
     for raw_col, adj_col in (("wilcoxon_p", "wilcoxon_p_holm"), ("ttest_rel_p", "ttest_rel_p_holm")):
@@ -671,6 +672,9 @@ def build_paired_fold_tests(per_fold: pd.DataFrame) -> pd.DataFrame:
 
     With S training seeds and 5 outer folds each contrast has up to S x 5 paired
     observations, so seed count drives the power here rather than the 5 folds alone.
+    Grouping is on base_split_condition, not split_condition: the latter carries the
+    runner's __seed<N> suffix, which would split the seeds into separate one-seed
+    tests where n=5 cannot clear the two-sided signed-rank floor of p=0.0625.
     """
     if per_fold.empty:
         return pd.DataFrame()
@@ -694,7 +698,7 @@ def build_paired_fold_tests(per_fold: pd.DataFrame) -> pd.DataFrame:
         return floor_cache[n]
 
     rows: list[dict] = []
-    group_cols = ["model", "split_condition", "router"]
+    group_cols = ["model", "base_split_condition", "router"]
 
     for keys, group in per_fold.groupby(group_cols):
         wide = group.pivot_table(index=["seed", "outer_fold"], columns="method", values="f1")
@@ -747,7 +751,7 @@ def summarise_across_folds(per_fold: pd.DataFrame) -> pd.DataFrame:
     if per_fold.empty:
         return pd.DataFrame()
 
-    group_cols = ["model", "split_condition", "router", "method"]
+    group_cols = ["model", "base_split_condition", "router", "method"]
     rows: list[dict] = []
     for keys, group in per_fold.groupby(group_cols):
         f1 = pd.to_numeric(group["f1"], errors="coerce").dropna()
@@ -795,9 +799,10 @@ def build_readme() -> pd.DataFrame:
          "Not directly comparable: holdout trains on ~105 sentences and scores 45, this protocol "
          "trains on ~120 and scores all 150. Report the two in separate tables."),
         ("Caveat", "Significance testing",
-         "Pairing is by (training_seed, outer_fold), so S seeds give S x 5 paired observations. "
-         "With a single seed n=5 and the two-sided signed-rank floor is p=0.0625; run more seeds "
-         "to reach alpha=0.01."),
+         "Pairing is by (training_seed, outer_fold), so S seeds give S x 5 paired observations; "
+         "20 seeds give n=100. The two-sided signed-rank p has a floor of 2/2^n for small n "
+         "(n=5 floors at 0.0625, which cannot clear alpha=0.05), so check "
+         "min_attainable_wilcoxon_p before reading a p-value as a measured quantity."),
         ("Gap closed", "journal_paired_fold_deltas",
          "collect_oof_fold_long() keeps only experiment ids containing '_oof', so exp01 and exp04 "
          "never enter fold_long and the fusion-vs-baseline contrasts are dropped. This file supplies "
@@ -808,7 +813,12 @@ def build_readme() -> pd.DataFrame:
         ("Sheets", "per_fold_f1", "Per-(seed, outer_fold) F1 for every method (paired units)."),
         ("Sheets", "paired_fold_tests",
          "Paired deltas with Wilcoxon and paired t-test p-values, Holm-adjusted within each "
-         "(model, split_condition) family."),
+         "(model, base_split_condition) family."),
+        ("Columns", "split_condition vs base_split_condition",
+         "split_condition is the runner's key and carries a __seed<N> suffix, so there is one "
+         "per (condition, training seed). base_split_condition drops that suffix and is the "
+         "real data condition; it is what the summary and significance sheets group on so the "
+         "seeds pool into one test instead of 20 underpowered ones."),
         ("Statistics", "Dependency caveat",
          "Outer folds within one partition share training data, so paired CV tests are liberal "
          "rather than conservative (Dietterich 1998; Bengio & Grandvalet 2004). Because "
