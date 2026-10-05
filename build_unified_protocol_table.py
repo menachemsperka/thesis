@@ -105,6 +105,55 @@ def _score(df: pd.DataFrame, pred_col: str) -> tuple[float, float, float]:
 
 
 # ---------------------------------------------------------------------------
+# Token error taxonomy
+# ---------------------------------------------------------------------------
+
+ERROR_CATEGORIES: tuple[str, ...] = (
+    "correct",
+    "false_positive",
+    "false_negative",
+    "type_error",
+    "boundary_error",
+)
+
+
+def _load_error_classifier():
+    """Import the thesis-wide token error taxonomy.
+
+    Reusing experiments/error_analysis.py keeps these counts directly comparable to
+    the error_type_summary sheets the individual experiments already emit, instead of
+    defining a second taxonomy that drifts from them.
+    """
+    experiments_dir = PROJECT_ROOT / "experiments"
+    if str(experiments_dir) not in sys.path:
+        sys.path.insert(0, str(experiments_dir))
+    try:
+        from error_analysis import classify_error
+    except Exception as exc:
+        print(f"  ! cannot import classify_error, error breakdown skipped ({exc})")
+        return None
+    return classify_error
+
+
+def _error_counts(df: pd.DataFrame, pred_col: str, classify) -> dict[str, int]:
+    """Token counts per error category.
+
+    Classifies each distinct (true, pred) label pair once instead of each token. With
+    9 component types there are at most a few hundred pairs against tens of thousands
+    of tokens per run, so this keeps the breakdown off the hot path.
+    """
+    pairs = pd.DataFrame({
+        "true_label": df["true_label"].astype(str),
+        "pred_label": df[pred_col].astype(str),
+    }).value_counts(["true_label", "pred_label"], sort=False)
+
+    counts = dict.fromkeys(ERROR_CATEGORIES, 0)
+    for (true_label, pred_label), n in pairs.items():
+        counts[classify(true_label, pred_label)] += int(n)
+    return counts
+
+
+# ---------------------------------------------------------------------------
 # Derived prediction columns
 # ---------------------------------------------------------------------------
 
@@ -337,6 +386,11 @@ _SEED_SUFFIX_RE = re.compile(r"__seed-?\d+$")
 _CONDITION_PREFIXES = ("exp07aug_", "exp07_", "exp08_")
 
 
+def base_condition(condition: str) -> str:
+    """Condition key without the training-seed suffix the runner appends."""
+    return _SEED_SUFFIX_RE.sub("", str(condition))
+
+
 def split_stems_for_condition(condition: str) -> list[str]:
     """Candidate split-JSON stems for a runner condition key, most specific first.
 
@@ -396,7 +450,13 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
     delta_rows: list[dict] = []
     fold_rows: list[dict] = []
     diag_rows: list[dict] = []
+    error_rows: list[dict] = []
     fold_map_cache: dict[tuple, dict[int, int] | None] = {}
+    classify = _load_error_classifier()
+    # The four base methods are byte-identical across the five router workbooks of one
+    # (model, condition, seed) because every router reuses the same cached Exp01/Exp04
+    # predictions. Count them once so the sheet is not 5x inflated.
+    base_errors_done: set[tuple[str, str, str]] = set()
 
     for run_idx, run in enumerate(runs, start=1):
         meta = run["meta"]
@@ -468,6 +528,33 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
             "fold_metrics_rows": int(len(run["fold_metrics"])),
         })
 
+        if classify is not None:
+            base_key = (model, condition, seed)
+            first_run_for_base = base_key not in base_errors_done
+            base_errors_done.add(base_key)
+            entity_tokens = int((detailed["true_label"].astype(str) != "O").sum())
+            for label, pred_col in methods:
+                is_router = pred_col == "fused_pred_label"
+                if not is_router and not first_run_for_base:
+                    continue
+                counts = _error_counts(detailed, pred_col, classify)
+                errors_total = n_tokens - counts["correct"]
+                error_rows.append({
+                    "model": model,
+                    "split_condition": condition,
+                    "base_split_condition": base_condition(condition),
+                    "seed": seed,
+                    "router": router if is_router else "(shared by all routers)",
+                    "method": label,
+                    "is_fusion_router": is_router,
+                    "eval_tokens": n_tokens,
+                    "entity_tokens": entity_tokens,
+                    **{name: counts[name] for name in ERROR_CATEGORIES},
+                    "errors_total": errors_total,
+                    "token_error_rate": errors_total / n_tokens if n_tokens else float("nan"),
+                    "source_file": path.name,
+                })
+
         cache_key = (condition, seed, outer_folds)
         if cache_key not in fold_map_cache:
             fold_map_cache[cache_key] = fold_map_for_run(meta, args)
@@ -505,9 +592,39 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
         "fusion_vs_base": pd.DataFrame(delta_rows),
         "router_diagnostics": pd.DataFrame(diag_rows),
         "per_fold_f1": pd.DataFrame(fold_rows),
+        "token_error_breakdown": pd.DataFrame(error_rows),
     }
     tables["paired_fold_tests"] = build_paired_fold_tests(tables["per_fold_f1"])
+    tables["token_error_summary"] = summarise_error_breakdown(tables["token_error_breakdown"])
     return tables
+
+
+def summarise_error_breakdown(breakdown: pd.DataFrame) -> pd.DataFrame:
+    """Sum the token error categories over every training seed of one condition."""
+    if breakdown.empty:
+        return pd.DataFrame()
+
+    group_cols = ["model", "base_split_condition", "method"]
+    count_cols = ["eval_tokens", "entity_tokens", *ERROR_CATEGORIES, "errors_total"]
+    rows: list[dict] = []
+    for keys, group in breakdown.groupby(group_cols, sort=True):
+        totals = {
+            col: int(pd.to_numeric(group[col], errors="coerce").fillna(0).sum())
+            for col in count_cols
+        }
+        tokens = totals["eval_tokens"]
+        rows.append({
+            **dict(zip(group_cols, keys)),
+            "n_seeds": int(group["seed"].nunique()),
+            "n_runs": int(len(group)),
+            **totals,
+            "token_error_rate": totals["errors_total"] / tokens if tokens else float("nan"),
+            **{
+                f"{name}_pct_of_tokens": (totals[name] / tokens if tokens else float("nan"))
+                for name in ERROR_CATEGORIES
+            },
+        })
+    return pd.DataFrame(rows)
 
 
 def _holm_adjust(pvals: np.ndarray) -> np.ndarray:
@@ -697,6 +814,21 @@ def build_readme() -> pd.DataFrame:
          "rather than conservative (Dietterich 1998; Bengio & Grandvalet 2004). Because "
          "THESIS_SPLIT_SEED drives fold assignment, each training seed yields a different 5-fold "
          "partition, so the seed dimension is repeated CV rather than reruns of one partition."),
+        ("Sheets", "token_error_summary",
+         "Token error counts summed over all training seeds per (model, condition, method): "
+         "false_positive, false_negative, type_error, boundary_error, correct, eval_tokens."),
+        ("Sheets", "token_error_breakdown",
+         "Same counts per individual run, so spread across seeds can be computed. Base-method "
+         "rows appear once per (model, condition, seed) with router='(shared by all routers)' "
+         "because all five routers reuse the same cached Exp01/Exp04 predictions."),
+        ("Metric", "Token error taxonomy",
+         "classify_error() from experiments/error_analysis.py, so these counts match the "
+         "error_type_summary sheets of the individual experiments: false_positive = spurious "
+         "entity on a true-O token, false_negative = real entity token predicted O, type_error = "
+         "entity detected but wrong component type, boundary_error = right type but wrong B/I."),
+        ("Caveat", "Token counts vs entity F1",
+         "The error breakdown is token-level (BIO tags) while F1 is entity-level (exact span and "
+         "type). They answer different questions and will not reconcile arithmetically."),
         ("Sheets", "router_diagnostics", "Agreement/disagreement token rates per run."),
         ("Sheets", "journal_* / paired_tests",
          "Copied verbatim from the runner's cross_comparison_latest.xlsx so this workbook is "
@@ -704,8 +836,8 @@ def build_readme() -> pd.DataFrame:
          "seed-based holdout numbers, and the runner's own fold sheets for cross-checking."),
         ("Reading order", "Which sheet for what",
          "Main table cells -> fold_summary. Headline gain -> fusion_vs_base. p-values -> "
-         "paired_fold_tests. Methods lambda -> journal_lambda_grid. Holdout comparison -> "
-         "journal_main_table."),
+         "paired_fold_tests. Error analysis -> token_error_summary. Methods lambda -> "
+         "journal_lambda_grid. Holdout comparison -> journal_main_table."),
     ]
     return pd.DataFrame(rows, columns=["Section", "Key", "Value"])
 
@@ -825,6 +957,8 @@ def main(argv: list[str] | None = None) -> int:
         "fusion_vs_base",
         "paired_fold_tests",
         "per_fold_f1",
+        "token_error_summary",
+        "token_error_breakdown",
         "router_diagnostics",
     ] + carried
 
