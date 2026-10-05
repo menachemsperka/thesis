@@ -80,11 +80,15 @@ BASE_METHODS: tuple[tuple[str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 def _seqeval_lists(df: pd.DataFrame, true_col: str, pred_col: str):
+    # One sort + one groupby. Filtering per sentence id instead would be O(sentences x rows),
+    # which at ~600 workbooks x 30 scorings each dominates the whole run.
+    work = df[["sentence_id", "token_idx", true_col, pred_col]].sort_values(
+        ["sentence_id", "token_idx"], kind="stable"
+    )
     y_true, y_pred = [], []
-    for sid in sorted(df["sentence_id"].unique()):
-        sdf = df[df["sentence_id"] == sid].sort_values("token_idx")
-        y_true.append(sdf[true_col].astype(str).tolist())
-        y_pred.append(sdf[pred_col].astype(str).tolist())
+    for _, group in work.groupby("sentence_id", sort=True):
+        y_true.append(group[true_col].astype(str).tolist())
+        y_pred.append(group[pred_col].astype(str).tolist())
     return y_true, y_pred
 
 
@@ -119,9 +123,13 @@ def _repaired_cascade_labels(work: pd.DataFrame) -> list[str]:
     etype = work["cascade_etype"].astype(str).tolist()
     bio_prob = pd.to_numeric(work["bio_prob"], errors="coerce").fillna(0.0).tolist()
 
-    for sid in work["sentence_id"].unique():
-        positions = work.index[work["sentence_id"] == sid].tolist()
-        positions.sort(key=lambda p: int(work.at[p, "token_idx"]))
+    # Positional order per sentence from a single sort + groupby; `work` has a 0..n-1 index,
+    # so group indices double as offsets into the bio/etype/bio_prob lists.
+    ordered = work[["sentence_id", "token_idx"]].sort_values(
+        ["sentence_id", "token_idx"], kind="stable"
+    )
+    for _, group in ordered.groupby("sentence_id", sort=False):
+        positions = group.index.tolist()
         for curr, nxt in zip(positions, positions[1:]):
             if bio[curr] == "B" and bio[nxt] == "I" and etype[curr] != etype[nxt]:
                 if bio_prob[curr] >= bio_prob[nxt]:
@@ -173,13 +181,48 @@ def add_derived_predictions(df: pd.DataFrame) -> pd.DataFrame:
 # OOF file discovery
 # ---------------------------------------------------------------------------
 
+# Directory names never worth walking. oof_router_cache holds one exp01/exp04 workbook per
+# (outer x inner) fold per run — thousands of files that cannot match the pattern anyway, and
+# walking them over a Drive FUSE mount costs minutes.
+PRUNED_DIR_NAMES: frozenset[str] = frozenset({
+    "oof_router_cache",
+    "splits",
+    "exp07",
+    "exp07_augmented",
+    "data",
+    "exp04_lambda_grid_cache",
+    ".git",
+})
+
+
+def _walk_for_pattern(root: Path, pattern: str) -> list[Path]:
+    """Recursive glob that skips PRUNED_DIR_NAMES subtrees."""
+    import fnmatch
+
+    matches: list[Path] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if entry.name not in PRUNED_DIR_NAMES:
+                    stack.append(entry)
+            elif fnmatch.fnmatch(entry.name, pattern):
+                matches.append(entry.resolve())
+    return matches
+
+
 def discover_oof_files(oof_dirs: list[Path], explicit: list[Path], pattern: str) -> list[Path]:
     found: list[Path] = [p.resolve() for p in explicit]
     for directory in oof_dirs:
         if not directory.exists():
             print(f"  ! missing directory, skipped: {directory}")
             continue
-        found.extend(sorted(p.resolve() for p in directory.rglob(pattern)))
+        found.extend(sorted(_walk_for_pattern(directory, pattern)))
 
     unique: list[Path] = []
     seen: set[Path] = set()
@@ -323,9 +366,11 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
     diag_rows: list[dict] = []
     fold_map_cache: dict[tuple, dict[int, int] | None] = {}
 
-    for run in runs:
+    for run_idx, run in enumerate(runs, start=1):
         meta = run["meta"]
         path = run["path"]
+        if run_idx % 25 == 0 or run_idx == 1 or run_idx == len(runs):
+            print(f"  scoring run {run_idx}/{len(runs)}", flush=True)
         detailed = add_derived_predictions(run["detailed"])
 
         model = str(meta.get("model", "unknown"))
@@ -675,21 +720,35 @@ def main(argv: list[str] | None = None) -> int:
     if not args.oof_dir and not args.oof_xlsx:
         args.oof_dir = [Path("outputs")]
 
-    print("Discovering OOF result files...")
+    print("Discovering OOF result files...", flush=True)
     candidates = discover_oof_files(args.oof_dir, args.oof_xlsx, args.pattern)
-    print(f"  {len(candidates)} candidate workbook(s)")
+    print(f"  {len(candidates)} candidate workbook(s)", flush=True)
 
-    runs = [run for run in (read_oof_file(p) for p in candidates) if run is not None]
+    print(f"Reading {len(candidates)} workbook(s) (slow over a Drive mount)...")
+    runs = []
+    for idx, path in enumerate(candidates, start=1):
+        run = read_oof_file(path)
+        if run is not None:
+            runs.append(run)
+        if idx % 25 == 0 or idx == len(candidates):
+            print(f"  read {idx}/{len(candidates)} ({len(runs)} usable)", flush=True)
+
     if not runs:
         print("\nNo OOF fusion results found. Point --oof-dir at the cross-comparison output "
               "directory (the one containing the 06_*_oof result files).")
         return 1
 
     runs = dedupe_runs(runs)
-    print(f"  {len(runs)} unique run(s) after de-duplication:")
-    for run in runs:
-        key = _run_key(run["meta"], run["path"])
-        print(f"    - model={key[0]} condition={key[1]} seed={key[2]} router={key[3]}")
+    print(f"  {len(runs)} unique (model, condition, seed, router) run(s) after de-duplication")
+    if len(runs) <= 12:
+        for run in runs:
+            key = _run_key(run["meta"], run["path"])
+            print(f"    - model={key[0]} condition={key[1]} seed={key[2]} router={key[3]}")
+    else:
+        keys = [_run_key(r["meta"], r["path"]) for r in runs]
+        print(f"    models={sorted({k[0] for k in keys})}")
+        print(f"    conditions={sorted({k[1] for k in keys})}")
+        print(f"    seeds={len({k[2] for k in keys})}, routers={sorted({k[3] for k in keys})}")
 
     if args.splits_dir:
         print(f"\nResolving split JSONs per condition from {args.splits_dir}")
