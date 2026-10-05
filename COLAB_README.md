@@ -84,9 +84,13 @@ os.environ["WANDB_DISABLED"] = "true"
 # os.environ["THESIS_NUM_EPOCHS"] = "5"
 ```
 
-## 5. Pre-built notebook (150 sentences, 10 seeds, journal profile)
+## 5. Pre-built notebook (150 sentences, 10→20 seeds, journal profile, all fusion methods)
 
-Upload or open from the repo: [`colab_150_sentences_journal_10seeds.ipynb`](colab_150_sentences_journal_10seeds.ipynb) — public clone, no PAT, runner invoked via one-argument-per-line `argv` list.
+Upload or open from the repo: `colab_150_sentences_journal_10seeds.ipynb` (not tracked in git — kept local/Drive-only; see `.gitignore`) — public clone, no PAT, runner invoked via one-argument-per-line `argv` list.
+
+- **Experiments:** all 6 primary fusion methods (`06_ready`, `06_svm_oof`, `06_svm_kernel_oof`, `06_nb_oof`, `06_lr_oof`, `06_rf_oof`), not just linear SVM + RF.
+- **Seeds:** started at 10, extended to 20 via cell "7a2 — Extend training seeds 10 → 20" — this **appends** 10 new random seeds to the existing `training_seeds.json` instead of regenerating it, so every already-completed run for the original 10 seeds stays valid and only the new 10 need training. Idempotent (no-op if the file already has ≥20 seeds); do **not** use `--rerun-experiments` or `--regenerate-training-seeds` for this, as both would force a full retrain or discard the old seeds respectively.
+- **Disabled-by-default cells:** "7c — Debug run" and "9 — Optional rebuild" are commented out so `Run All` doesn't accidentally retrain everything or clobber the extended seed list (uncomment manually only for one-off debugging).
 
 ## 6. Running Experiments
 
@@ -128,6 +132,16 @@ OUTPUT = "/content/drive/MyDrive/thesis_project/cross_comparison_journal"
 ```
 
 Works on **GPU or CPU** runtime: GPU uses fp16 when CUDA is available; CPU turns fp16 off and uses smaller Exp04 batches automatically. For CPU smoke tests only, set `THESIS_EXP04_FAST=1` (not for paper numbers). See `thesis_overview.md` Part IV §6.
+
+**Paper-ready results table (no retraining, CPU, seconds):**
+```python
+!python build_unified_protocol_table.py \
+  --oof-dir {OUTPUT} \
+  --splits-dir {OUTPUT}/exp07/splits \
+  --reference-xlsx {OUTPUT}/cross_comparison_latest.xlsx \
+  --output {OUTPUT}/unified_protocol_table.xlsx
+```
+Re-scores Exp01, Exp04, Exp05 repair, confidence fusion and every OOF router on the **same** pooled outer-test tokens, so fusion is comparable to the base models under one evaluation protocol, then adds Wilcoxon + paired *t*-tests (Holm-adjusted) paired by `(training_seed, outer_fold)`. It also copies the runner's `journal_*` sheets in verbatim, so `unified_protocol_table.xlsx` is the **only** workbook you need to write from. Required because the runner's `journal_paired_fold_deltas` sheet is not emitted — see `thesis_overview.md` Part V §V.1. In the pre-built notebook this is **cell 9b**.
 
 **To run interactively in a Python cell:**
 ```python

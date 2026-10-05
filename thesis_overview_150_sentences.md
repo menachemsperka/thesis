@@ -12,6 +12,7 @@ Consolidated documentation for the **150-sentence subset** (fixed `--subset-seed
 | **II** | Fair training (DictaBERT / BEREL pilot profile) |
 | **III** | OOF fusion on 150 sentences (5 folds × ~30 test sentences) |
 | **IV** | Journal one-command run (`--journal-paper`) for 150-sentence subset |
+| **V** | Statistical significance testing (seed-count power, paired t-test / Wilcoxon, reporting template) |
 
 **Full-corpus math and global architecture:** [`thesis_overview.md`](thesis_overview.md) Part I.
 
@@ -64,8 +65,8 @@ python run_cross_data_model_comparison.py \
 | `--condition-sources` | `exp07` | Only Exp07 sentence-split strategies (§4). |
 | `--exp07-source` | `rerun` | Regenerate `{OUTPUT}/exp07/splits/` from the **150-sentence CSV** (required with subset; do not use `saved` from full corpus). |
 | `--base-mode` | `auto` | Reuse cached Exp01+Exp04 artifacts when `(model, condition)` matches; otherwise train bases. |
-| `--num-seeds` | `20` (thesis) / **`3` (journal paper)** | Persisted random seeds in `{OUTPUT}/training_seeds.json` (§4.3). Journal: see [`thesis_overview_journal_paper_results.md`](thesis_overview_journal_paper_results.md). |
-| `--consolidated-error-analysis` | `all` | One merged error-analysis workbook (higher RAM than `split`). Summary tabs compare **four methods only**: direct NER (`01`), cascade (`04`), linear SVM router (`06_svm_oof`), RF router (`06_rf_oof`) — see §13.2.1. |
+| `--num-seeds` | `20` (thesis) / **`3` (journal paper default)** | Persisted random seeds in `{OUTPUT}/training_seeds.json` (§4.3). `--journal-paper` only substitutes its 3-seed default when `--num-seeds` is **not** explicitly passed (and `THESIS_CROSS_NUM_SEEDS` is unset) — an explicit `--num-seeds 20` together with `--journal-paper` now correctly stays at 20 (fixed; previously collided with the default and silently collapsed to 3). Journal: see [`thesis_overview_journal_paper_results.md`](thesis_overview_journal_paper_results.md). |
+| `--consolidated-error-analysis` | `all` | One merged error-analysis workbook (higher RAM than `split`). Summary tabs compare **every fusion method actually run**: direct NER (`01`), cascade (`04`), confidence fusion (`06_ready`), and all ML routers (linear SVM, RBF SVM, Naive Bayes, logistic regression, RF, MLP) — see §13.2.1. |
 | `--resume` | on | Skip completed jobs in `{OUTPUT}/cross_comparison_progress_latest.json`. |
 
 **Colab:** set `os.environ["THESIS_RUN_ENV"] = "colab"` and `WANDB_DISABLED=true` before running (see [`COLAB_README.md`](COLAB_README.md)).
@@ -169,10 +170,12 @@ Every later run with the same output folder **reuses that file** (including `--r
 |---------|--------|
 | (default) | Load or create `{OUTPUT}/training_seeds.json` |
 | `--training-seeds-file path.json` | Use a custom seed list file |
-| `--regenerate-training-seeds` | Write a new random list (also set `THESIS_CROSS_SEEDS_MASTER=12345` for reproducible generation) |
+| `--regenerate-training-seeds` | Write a **brand-new, fully random** list, replacing every existing seed — orphans all already-completed runs for the old seeds. Only use for a from-scratch restart, never to "add more seeds" to a run in progress. |
 | `THESIS_CROSS_SEEDS_MASTER` | Seeds the RNG when **creating** the file (optional) |
 
 Legacy consecutive seeds **42…61** apply only if no `training_seeds.json` exists and you use old tooling; the cross-comparison runner always persists random seeds now.
+
+**Extending seed count without losing completed runs (e.g. 10 → 20):** `--regenerate-training-seeds` regenerates **all** seeds randomly, so it cannot be used to grow an existing seed list — doing so would silently discard every run already completed under the original seeds. Instead, append new random seeds to the existing list in place (read `training_seeds.json`, keep all existing entries, draw additional unique random integers up to the new `--num-seeds` target, write back with the same `"seeds"` / `"num_seeds"` schema) and leave `--regenerate-training-seeds` off. The 150-sentence journal notebook (`colab_150_sentences_journal_10seeds.ipynb`, cell "7a2 — Extend training seeds") implements exactly this: it is idempotent (no-op once the file already has ≥ the target count) and a plain `--resume` afterward trains only the newly-added seeds, since the original seeds' checkpoint rows are untouched.
 
 For each Exp07 **base** condition, the runner expands to **20 seeded conditions** (`exp07_<variant>__seed<seed>`). `THESIS_SPLIT_SEED` is set per job (model initialization / training stochasticity). Exp07 JSON paths for non-augmented runs are shared per variant; the **same** train/eval files are evaluated under each paired seed for fair cross-seed comparison (see `theisis overview.md` §14).
 
@@ -456,20 +459,25 @@ $$
 
 Result xlsx files include token-level **confusion matrix**, **per-type metrics**, **error_type** taxonomy (`classify_error`), **confidence_analysis**, **disagreement_analysis**, **entity_length_analysis**. Token-level counts can differ from entity-level F1.
 
-#### 13.2.1 Consolidated error analysis (four-way comparison)
+#### 13.2.1 Consolidated error analysis (all fusion methods)
 
-`consolidate_error_analysis.py` (invoked via `--consolidated-error-analysis`) builds thesis summary tabs with **exactly these pipelines** (non-CRF):
+`consolidate_error_analysis.py` (invoked via `--consolidated-error-analysis`) builds thesis summary tabs with **every** fusion/router variant actually trained, not just a Linear-SVM + RF subset (`METHOD_SPECS` / `FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS`):
 
-| Column | Source experiment | Role |
+| Column | Source experiment(s) | Role |
 |--------|-------------------|------|
-| Regular NER | `01` | Direct encoder NER |
-| Cascade NER | `04` | Three-step AUC cascade |
-| Linear SVM Fusion | `06_svm_oof` | `LinearSVC` disagreement router (OOF CV) |
-| RF Fusion | `06_rf_ready` | `RandomForestClassifier` disagreement router |
+| Regular NER | `01` (or `10_regular`) | Direct encoder NER |
+| Cascade NER | `04` (or `10_cascade`) | Three-step AUC cascade |
+| Confidence Fusion | `06_ready` (or `10_fusion_ready`) | Scalar-confidence arbitration (§11) |
+| Linear SVM Fusion | `06_svm_oof` (OOF primary; `06_svm_ready` / `10_svm_ready` appendix) | `LinearSVC` disagreement router |
+| RBF SVM Fusion | `06_svm_kernel_oof` (`06_svm_kernel_ready` / `10_svm_kernel_ready` appendix) | RBF `SVC` disagreement router |
+| Naive Bayes Fusion | `06_nb_oof` (`06_nb_ready` / `10_nb_ready` appendix) | `GaussianNB` disagreement router |
+| Logistic Regression Fusion | `06_lr_oof` (`06_lr_ready` / `10_lr_ready` appendix) | `LogisticRegression` disagreement router |
+| RF Fusion | `06_rf_oof` (`06_rf_ready` / `10_rf_ready` appendix) | `RandomForestClassifier` disagreement router |
+| MLP Fusion | `06_mlp_oof` (`06_mlp_ready` / `10_mlp_ready` appendix) | `MLPClassifier` disagreement router (recognized if run; not in the default `EXPERIMENTS` list) |
 
-Other runs in the same cross-comparison (e.g. `05_ready`, `06_ready`, kernel SVM, NB, LR, MLP) stay in `cross_comparison_*.xlsx` but are **excluded** from `consolidated_error_analysis_*.xlsx`. Re-consolidate after training; no need to re-run `01`/`04` if metrics workbooks already exist.
+Every experiment ID selected via `--experiments` that matches one of the rows above is folded into its column automatically; **Confidence Fusion has no trained classifier**, so it is included in the FP/FN/Type/Boundary error-type table but has no routing-decision section (no `selected_source` classifier to analyze). Re-consolidate after training; no need to re-run `01`/`04` if metrics workbooks already exist.
 
-Per-router sections in the consolidated workbook: **Linear SVM** and **RF** each get their own routing / disagreement breakdown (not pooled).
+Per-router sections in the consolidated workbook: **every** ML router (Linear SVM, RBF SVM, Naive Bayes, Logistic Regression, RF, MLP — whichever were actually run) gets its own Routing Decision / Disagreement / Error-Types-by-Route breakdown (not pooled).
 
 ### 13.3 Fusion-specific counters
 
@@ -817,6 +825,13 @@ Each `(model, condition, seed, 06_*_oof)` run retrains Exp01 + Exp04 many times 
 - Label column: `protocol = nested_stratified_cv_oof`.
 - Report per-fold metrics sheet (`fold_metrics`) when available.
 - Appendix: `06_*_ready` labeled **in-sample routing upper bound**.
+- **Score baselines inside the same folds.** Build `unified_protocol_table.xlsx` with
+  `build_unified_protocol_table.py` so Exp01/Exp04/Exp05/confidence fusion are scored on the same
+  pooled outer-test tokens as the routers. Never subtract a 70/30 holdout baseline F1 from an OOF
+  fusion F1 — the fold models train on ~120 sentences vs. ~105 for the holdout, so the difference
+  conflates protocol with method.
+- Keep holdout results in a **separate** table with its own caption (seed-paired significance and
+  the random-vs-label-aware split comparison), never as extra columns beside OOF numbers.
 
 # Part IV — Journal paper workflow (150-sentence example)
 
@@ -889,16 +904,26 @@ Prefer **`--journal-paper`** so calibration uses the same `--output-dir` cache.
 
 ## 2. Primary results workbook
 
-**File:** `{output-dir}/cross_comparison_latest.xlsx`
+**File:** `{output-dir}/unified_protocol_table.xlsx` — built by `build_unified_protocol_table.py`
+(see Part V §V.1). **This is the single file to write the paper from:** it re-scores every method on
+the same outer-test tokens *and* copies the runner's `journal_*` sheets in verbatim.
 
 | Sheet | Paper use |
 |-------|-----------|
-| **`journal_oof_fold_summary`** | Main OOF fusion F1 (5 folds) |
-| **`journal_main_table`** | Exp01/04 (+ seeds mean±SD) |
-| **`journal_paired_fold_deltas`** | Paired ΔF1 across folds |
-| **`journal_lambda_grid`** | Selected λ from calibration cache |
-| **`journal_loss_config`** | λ recorded per Exp04 run |
-| **`journal_paper_guide`** | Short index |
+| **`fold_summary`** | Main-table cells: mean ± SD F1 over all `(seed, fold)` units, every method |
+| **`fusion_vs_base`** | Headline ΔF1, fusion minus each baseline on identical tokens |
+| **`paired_fold_tests`** | Wilcoxon + t-test p-values, Holm-adjusted per `(model, split_condition)` |
+| **`unified_main_table`** | Pooled outer-test F1/P/R, one protocol |
+| **`journal_lambda_grid`** *(carried)* | Selected λ from calibration cache — Methods section |
+| **`journal_loss_config`** *(carried)* | λ recorded per Exp04 run |
+| **`journal_main_table`** *(carried)* | Seed-based holdout numbers — separate table only |
+
+**Runner output:** `{output-dir}/cross_comparison_latest.xlsx` is still written by cell 8 / the
+runner and remains the source for the carried sheets above. Do **not** mix its holdout F1 with the
+OOF F1 in one table: outer folds train on ~120 of 150 sentences while the 70/30 holdout trains on
+~105, so a mixed table credits fusion with a training-data advantage unrelated to fusion.
+
+> `journal_paired_fold_deltas` is **not** emitted — see the correction in Part V §V.1.
 
 ---
 
@@ -933,3 +958,207 @@ Prefer **`--journal-paper`** so calibration uses the same `--output-dir` cache.
 - Grid script: `experiments/experiment_04_loss_weight_grid.py` (also invoked via `exp04_loss_calibration.py`)
 
 Implementation: `experiments/journal_results_export.py` builds journal sheets on export.
+
+# Part V — Statistical significance testing
+
+**Status for this pilot:** the 150-sentence cross-comparison referenced throughout Parts I–IV (DictaBERT + BEREL, all 6 primary fusion methods) was run with **`--num-seeds 20`** (original 10 seeds + 10 extended in place per §4.3, no runs discarded). This satisfies the "publication-ready" seed-count guidance in §V.2 below, and gives `paired_fold_tests` (§V.1) up to `20 × 5 = 100` paired observations per method comparison.
+
+*Merged from `STATISTICAL_SIGNIFICANCE_GUIDE.md` (2026-10-04); that file is now a pointer to this section.*
+
+## V.1 Primary path: `build_unified_protocol_table.py` (use this first)
+
+> **Correction (2026-10-05).** Earlier revisions of this section claimed that
+> `journal_paired_fold_deltas` in `cross_comparison_*.xlsx` already holds the fusion-vs-baseline
+> tests. **It does not, and the sheet is not emitted at all.** `collect_oof_fold_long()` in
+> `experiments/journal_results_export.py` skips every row whose `experiment_id` lacks `_oof`:
+>
+> ```python
+> if OOF_EXPERIMENT_SUFFIX not in exp_id:
+>     continue
+> ```
+>
+> so `exp01`, `exp04` and `exp06_ready` never enter `fold_long`. In
+> `paired_fold_method_comparison()` both entries of `JOURNAL_BASELINE_EXP_IDS` are then absent
+> from `available`, the pair-building loop `continue`s on both, `pairs` stays empty, and the
+> function returns an empty frame — which the writer skips via `if not journal_paired_fold_df.empty`.
+> Net effect: **no `journal_paired_fold_deltas` sheet exists in the workbook.**
+
+Run the standalone builder instead. It re-scores Exp01, Exp04, Exp05 repair, confidence fusion and
+every OOF router on the **same** pooled outer-test tokens — supplying the per-fold base-model F1
+that `fold_long` is missing — and then runs the paired tests:
+
+```bash
+python build_unified_protocol_table.py \
+  --oof-dir {output-dir} \
+  --splits-dir {output-dir}/exp07/splits \
+  --reference-xlsx {output-dir}/cross_comparison_latest.xlsx \
+  --output {output-dir}/unified_protocol_table.xlsx
+```
+
+| Sheet in `unified_protocol_table.xlsx` | What it gives you |
+|----------------------------------------|--------------------|
+| `paired_fold_tests` | Paired **Wilcoxon signed-rank + t-test** p-values for every fusion method vs. Regular NER, Cascade NER, cascade+repair and confidence fusion, paired by `(training_seed, outer_fold)`, **Holm-adjusted** within each `(model, split_condition)` family. |
+| `fold_summary` | Mean ± SD F1 over all `(seed, fold)` units per method — the main-table cells. |
+| `fusion_vs_base` | ΔF1 of fusion minus each baseline on identical tokens. |
+| `unified_main_table` | Pooled outer-test F1/P/R per method, one evaluation protocol. |
+| `per_fold_f1` | Raw per-`(seed, fold)` F1 — the paired units behind the tests. |
+| `paired_tests` *(carried over)* | Paired t-test + Wilcoxon across shared seeds for exp07-vs-exp07+aug and exp08 ablations (§13.1 of Part I). |
+
+Because pairing is by `(training_seed, outer_fold)`, raising `--num-seeds` directly multiplies
+`n_pairs` (seeds × 5) and therefore statistical power — this is exactly why extending from 10 to 20
+seeds (§4.3) was worth doing before finalizing significance claims. **Check `n_pairs` in the output:**
+it should read 100 for this pilot. If it reads 5, only one seed's OOF workbooks were discovered, and
+at *n*=5 a two-sided signed-rank test cannot fall below *p*=0.0625 regardless of effect size.
+
+**Caveat to state in Methods:** outer folds within one partition share training data, so paired CV
+tests are *liberal* rather than conservative (Dietterich 1998; Bengio & Grandvalet 2004). Because
+`THESIS_SPLIT_SEED` drives fold assignment (`split_seed + 1000`), each training seed yields a
+**different** 5-fold partition, so the seed dimension is genuine repeated CV rather than reruns of a
+single partition — this is the main thing mitigating the dependency.
+
+**Use §V.2–§V.6 below only for:** (a) understanding *why* seed count matters, (b) ad-hoc comparisons
+the builder doesn't cover (e.g. DictaBERT vs. BEREL head-to-head on one condition), or (c) a
+>2-method omnibus test (Friedman).
+
+## V.2 Why seed count matters (power analysis)
+
+**Seeds are the primary source of variance** for paired significance testing — they control weight initialization, data shuffling, and training stochasticity. Data-split strategies (Exp07 variants) are systematic, not random, conditions: useful for generalization claims but not a substitute for seed variance in a paired test.
+
+| Term | Meaning | Effect |
+|------|---------|--------|
+| **Seeds** | Different random initializations | Creates paired observations for the same data condition |
+| **Splits** | Different train/test partitions | Tests generalization across data conditions |
+| **Runs** | Repeating the whole experiment | Same as seeds if you change the seed each time |
+
+**Bottom line:** for significance testing, seeds = runs; each seed creates one paired observation.
+
+With only 3 seeds (the `--journal-paper` default when `--num-seeds` is not explicit — see Part I §1.1), a paired t-test has very little power: p-values rarely reach < 0.05 unless the effect is huge.
+
+### Sample-size requirements for α = 0.05
+
+| Effect size | Required seeds | Power |
+|-------------|-----------------|-------|
+| Large (d=0.8) | 10 seeds | ~75% |
+| Large (d=0.8) | 15 seeds | ~88% |
+| Medium (d=0.5) | 20 seeds | ~75% |
+| Medium (d=0.5) | 30 seeds | ~87% |
+| Small (d=0.2) | 50+ seeds | ~50%+ |
+
+**Practical recommendation:** 10–20 seeds for detecting meaningful differences; this pilot uses 20.
+
+### Run-configuration reference
+
+| Goal | Seeds | Command |
+|------|-------|---------|
+| Quick sanity check | 3 | `--num-seeds 3` |
+| Moderate confidence | 10 | `--num-seeds 10` |
+| Publication-ready | 20 | `--num-seeds 20` (used here) |
+| High-confidence | 30 | `--num-seeds 30` |
+
+## V.3 Statistical test formulas (reference)
+
+**Paired t-test** (recommended primary test for F1 scores across matched seeds/folds):
+
+```python
+from scipy.stats import ttest_rel
+t_stat, p_value = ttest_rel(f1_method_a, f1_method_b)  # same seeds/folds, same order
+```
+
+**Wilcoxon signed-rank** (non-parametric alternative; less dependent on normality):
+
+```python
+from scipy.stats import wilcoxon
+stat, p_value = wilcoxon(f1_method_a, f1_method_b)
+```
+
+**Bootstrap confidence interval** (not computed automatically; useful supplementary evidence):
+
+```python
+import numpy as np
+
+def bootstrap_ci(a, b, n_bootstrap=10000, ci=0.95):
+    diffs = np.array(a) - np.array(b)
+    boot_diffs = [np.mean(np.random.choice(diffs, size=len(diffs), replace=True))
+                  for _ in range(n_bootstrap)]
+    lower = np.percentile(boot_diffs, (1 - ci) / 2 * 100)
+    upper = np.percentile(boot_diffs, (1 + ci) / 2 * 100)
+    return np.mean(diffs), lower, upper
+# If the returned interval excludes 0, the difference is significant at that CI level.
+```
+
+The strongest evidence appears when both the t-test and Wilcoxon agree ($p_{t} < 0.05$ and $p_{Wilcoxon} < 0.05$) — a result consistent across seeds/folds, not caused by one lucky split.
+
+## V.4 Multi-method comparison (>2 methods)
+
+`paired_fold_tests` only compares each fusion method against the baselines (pairwise). To test **all** fusion methods jointly (omnibus test before pairwise post-hoc), use a **Friedman test** with **Nemenyi post-hoc** or **Bonferroni correction**:
+
+```python
+from scipy.stats import friedmanchisquare
+import scikit_posthocs as sp  # pip install scikit-posthocs
+import numpy as np
+
+# rows = seeds (or seed x fold pairs), columns = methods
+data = np.array([
+    [0.72, 0.71, 0.74, 0.70, 0.73, 0.75],  # seed 1: [regular, cascade, svm, rbf_svm, nb, rf]
+    # ... remaining seeds
+])
+stat, p = friedmanchisquare(*data.T)
+if p < 0.05:
+    print(sp.posthoc_nemenyi_friedman(data))
+```
+
+## V.5 Reporting template
+
+```
+DictaBERT achieved mean F1 = 0.742 ± 0.015 (SD over 20 seeds), compared to
+BEREL's 0.731 ± 0.018. A paired t-test confirmed the difference was
+statistically significant (t(19) = 2.84, p = 0.010 < 0.05), with DictaBERT
+outperforming BEREL by an average of 1.1 F1 points.
+```
+
+For fusion-method claims, cite `paired_fold_tests` in `unified_protocol_table.xlsx` directly: report `mean_delta_f1`, `wilcoxon_p_holm` (and raw `wilcoxon_p`), `ttest_rel_p_holm`, and `n_pairs` for the method vs. baseline pair (so a reader can judge power), plus `holm_family_size` so the correction is auditable.
+
+## V.6 Ad-hoc significance outside the journal pipeline (optional)
+
+For comparisons `paired_fold_tests` doesn't cover out of the box — e.g. DictaBERT vs. BEREL head-to-head on one specific condition, read directly from `cross_comparison_latest.json`:
+
+```python
+"""Compute pairwise statistical significance from cross_comparison results."""
+import json
+from pathlib import Path
+from scipy.stats import ttest_rel, wilcoxon
+import numpy as np
+
+def load_results(json_path):
+    with open(json_path, encoding="utf-8") as f:
+        return json.load(f).get("results", [])
+
+def group_by_seed(results, model_id, experiment_id, condition_key):
+    return [r["f1"] for r in results
+            if r.get("model_id") == model_id and r.get("experiment_id") == experiment_id
+            and r.get("condition_key") == condition_key and r.get("f1") is not None]
+
+def pairwise_significance(f1_a, f1_b, alpha=0.05):
+    if len(f1_a) != len(f1_b) or len(f1_a) < 3:
+        return None
+    t_stat, t_pval = ttest_rel(f1_a, f1_b)
+    w_stat, w_pval = wilcoxon(f1_a, f1_b)
+    return {
+        "mean_diff": np.mean(f1_a) - np.mean(f1_b),
+        "t_stat": t_stat, "t_pval": t_pval,
+        "w_stat": w_stat, "w_pval": w_pval,
+        "significant_ttest": t_pval < alpha, "significant_wilcoxon": w_pval < alpha,
+        "n_pairs": len(f1_a),
+    }
+
+results = load_results(Path("outputs/cross_comparison/cross_comparison_latest.json"))
+f1_dictabert = group_by_seed(results, "dicta-il/dictabert", "exp01", "exp07_baseline")
+f1_berel = group_by_seed(results, "dicta-il/BEREL_3.0", "exp01", "exp07_baseline")
+print(pairwise_significance(f1_dictabert, f1_berel))
+```
+
+## References
+
+1. Demšar, J. (2006). Statistical comparisons of classifiers over multiple data sets. *JMLR*.
+2. Dror, R., et al. (2018). The hitchhiker's guide to testing statistical significance in NLP. *ACL*.
+3. Berg-Kirkpatrick, T., et al. (2012). An empirical investigation of statistical significance in NLP. *EMNLP*.
