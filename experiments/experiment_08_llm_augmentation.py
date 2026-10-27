@@ -364,6 +364,20 @@ def _get_entity_tokens_from_df(data_df: pd.DataFrame, label_suffix: str) -> list
     return result_df["token"].dropna().unique().tolist()
 
 
+def sentences_to_token_df(sentences: list[dict]) -> pd.DataFrame:
+    """Token rows (``token``, ``raw_tags``) for *sentences* only.
+
+    Pass this as ``full_data_df`` to ``_augment_training_data`` so replacement entity tokens come
+    from the training sentences alone, never from evaluation-side surface forms.
+    """
+    rows: list[dict[str, str]] = []
+    for sent in sentences:
+        tokens = str(sent.get("text", "")).split()
+        for token, label in zip(tokens, sent.get("labels", [])):
+            rows.append({"token": token, "raw_tags": str(label)})
+    return pd.DataFrame(rows, columns=["token", "raw_tags"])
+
+
 def _find_all_entity_positions(labels: list[str], label_suffix: str) -> list[int]:
     """Return indices of all tokens matching B-{suffix} or I-{suffix}."""
     target_tags = {f"B-{label_suffix}", f"I-{label_suffix}"}

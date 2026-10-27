@@ -22,6 +22,13 @@ Post-processing
 When ``THESIS_STEP3_BI_TYPE_RECONCILE=1``, the same **B/I entity-type consistency** idea as
 Experiment 05_ready is applied to decoded BIO + type rows (if ``B-X`` is followed by ``I-Y``, pick one type).
 
+Loss weights
+------------
+``lambda_bio`` / ``lambda_type`` come from the CRF validation grid (``THESIS_EXP10_LAMBDA_BIO`` /
+``THESIS_EXP10_LAMBDA_TYPE``); when unset they fall back to the Exp04 values in ``cap.LOSS_CONFIG``.
+The CRF negative log-likelihood term is weighted by ``CRF_LOSS_WEIGHT``. All three are written to
+the ``loss_config`` sheet.
+
 Entry points
 ------------
 * ``run_cascaded_crf_pipeline()`` — main training/eval/export loop (invoked by subprocess from
@@ -51,6 +58,20 @@ from crf_layer import LinearChainCRF
 from model_backbone import encode_words_for_ner
 
 import auc_cascaded_pipeline as cap
+
+
+CRF_LOSS_WEIGHT = 0.5
+
+
+def crf_loss_config() -> tuple[dict, str]:
+    """Exp04 loss config with the CRF-grid weights applied; returns (config, source label)."""
+    cfg = dict(cap.LOSS_CONFIG)
+    overridden = False
+    for key, env_name in (("lambda_bio", "THESIS_EXP10_LAMBDA_BIO"), ("lambda_type", "THESIS_EXP10_LAMBDA_TYPE")):
+        if (os.environ.get(env_name) or "").strip():
+            cfg[key] = cap._env_float(env_name, cfg[key], minimum=0.0)
+            overridden = True
+    return cfg, ("THESIS_EXP10_LAMBDA_*" if overridden else "THESIS_EXP04_LAMBDA_* or Exp04 defaults")
 
 
 class CascadedNERDatasetCRF(cap.CascadedNERDataset):
@@ -118,7 +139,7 @@ def _collate_crf(pad_token_id, batch):
     return base
 
 
-def train_epoch_crf(model, loader, optimizer, scheduler, device, cfg_loss, grad_accum, max_grad_norm, lambda_crf=0.5):
+def train_epoch_crf(model, loader, optimizer, scheduler, device, cfg_loss, grad_accum, max_grad_norm, lambda_crf=CRF_LOSS_WEIGHT):
     model.train()
     entity_loss_fn = cap.get_binary_loss_fn(cfg_loss["entity_loss"], cfg_loss)
     bio_loss_fn = cap.get_binary_loss_fn(cfg_loss["bio_loss"], cfg_loss)
@@ -546,6 +567,8 @@ def run_cascaded_crf_pipeline() -> str:
     max_grad_norm = cap.TRAINING_CONFIG["max_grad_norm"]
     patience = cap.TRAINING_CONFIG["early_stopping_patience"]
     min_delta = cap.TRAINING_CONFIG["early_stopping_min_delta"]
+    loss_config, loss_config_source = crf_loss_config()
+    print(f"Loss config ({loss_config_source}): {loss_config}, lambda_crf={CRF_LOSS_WEIGHT}")
     best_monitored = float("-inf")
     patience_ctr = 0
     metrics_history = []
@@ -558,7 +581,7 @@ def run_cascaded_crf_pipeline() -> str:
             optimizer,
             scheduler,
             device,
-            cap.LOSS_CONFIG,
+            loss_config,
             grad_accum,
             max_grad_norm,
         )
@@ -649,6 +672,20 @@ def run_cascaded_crf_pipeline() -> str:
         details_by_mode[mode_tag] = details_opt
 
     df_metrics = pd.DataFrame(metrics_history)
+    df_loss_config = pd.DataFrame(
+        [
+            {
+                "lambda_bio": loss_config["lambda_bio"],
+                "lambda_type": loss_config["lambda_type"],
+                "lambda_crf": CRF_LOSS_WEIGHT,
+                "lambda_source": loss_config_source,
+                "entity_loss": loss_config["entity_loss"],
+                "bio_loss": loss_config["bio_loss"],
+                "type_loss": loss_config["type_loss"],
+                "split_seed": os.environ.get("THESIS_SPLIT_SEED", "42"),
+            }
+        ]
+    )
     details_frames = []
     for mode_tag in [cap.eval_mode_tag(m) for m in cap.EVAL_CASCADE_MODES]:
         rows = details_by_mode.get(mode_tag, [])
@@ -659,6 +696,7 @@ def run_cascaded_crf_pipeline() -> str:
     df_details = pd.concat(details_frames, ignore_index=True) if details_frames else pd.DataFrame()
     excel_path = os.path.join(os.path.dirname(__file__), "cascaded_pipeline_crf_results.xlsx")
     with pd.ExcelWriter(excel_path) as writer:
+        df_loss_config.to_excel(writer, sheet_name="loss_config", index=False)
         df_metrics.to_excel(writer, sheet_name="metrics", index=False)
         if not df_details.empty:
             df_details.to_excel(writer, sheet_name="detailed_results", index=False)

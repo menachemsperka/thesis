@@ -6,8 +6,9 @@ This folder is an organized, upload-ready project for running the thesis experim
 
 | File | Use |
 |------|-----|
-| [`thesis_overview.md`](thesis_overview.md) | Full corpus (~300 sentences): pipeline, fair training, OOF fusion, journal workflow |
+| [`thesis_overview.md`](thesis_overview.md) | Full corpus (~300 sentences): pipeline, fair training, OOF fusion on both tracks (non-CRF `06_*_oof`, CRF `10_*_oof`), in-fold augmentation, journal workflow; canonical full run in §1 / Part IV §1 |
 | [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md) | 150-sentence pilot (`--subset-sentences 150`) |
+| [`colab_full_aug_crf_journal.ipynb`](colab_full_aug_crf_journal.ipynb) | Colab notebook for the canonical full run (6 encoders, 20 seeds, `exp07` + `exp07+aug`, both tracks) |
 
 Legacy filenames (`theisis overview.md`, etc.) redirect to these two files.
 

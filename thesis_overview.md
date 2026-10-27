@@ -1,8 +1,8 @@
 # Thesis Overview (Full Labeled Corpus)
 
-Consolidated thesis documentation for the **full NER dataset** (~300 sentences), cross-comparison runner, Exp01–Exp06/OOF fusion, fair training, and IEEE journal exports.
+Consolidated thesis documentation for the **full NER dataset** (~300 sentences): the cross-comparison runner, both Exp07 condition sources (`exp07` and `exp07+aug`), both architecture tracks (non-CRF Exp01–Exp06 and CRF Exp10), nested 5-fold OOF router fusion on both tracks, 20 persisted training seeds, loss-weight calibration for both cascades, fair training, and IEEE journal exports.
 
-*Merged on 2026-09-30 from all overview markdown files in this repository.*
+*Merged on 2026-09-30 from all overview markdown files in this repository. Updated 2026-10-27: the full run now carries every addition of the 150-sentence pilot (20 seeds, 5-fold OOF routers, λ calibration, unified protocol table, consolidated error analysis) and extends them to augmentation and the CRF track.*
 
 ## Master table of contents
 
@@ -14,7 +14,8 @@ Consolidated thesis documentation for the **full NER dataset** (~300 sentences),
 | **IV** | Journal paper: one command, results & error analysis | Former `thesis_overview_journal_paper_results.md` |
 | **V** | Statistical significance testing (seed-count power, paired t-test / Wilcoxon, reporting template) | Former `STATISTICAL_SIGNIFICANCE_GUIDE.md` |
 
-**150-sentence pilot:** see companion file [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md).
+**150-sentence pilot:** see companion file [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md).  
+**Colab notebook for the full run:** [`colab_full_aug_crf_journal.ipynb`](colab_full_aug_crf_journal.ipynb).
 
 ---
 
@@ -24,34 +25,41 @@ Consolidated thesis documentation for the **full NER dataset** (~300 sentences),
 
 ## 1. Purpose of This Methodology
 
-This document explains the scientific architecture triggered by the command:
+This document explains the scientific architecture triggered by the canonical full-corpus command (Colab: [`colab_full_aug_crf_journal.ipynb`](colab_full_aug_crf_journal.ipynb)):
 
 ```bash
 python run_cross_data_model_comparison.py \
---resume \
---base-mode auto \
---experiments 01,04,05_ready,06_ready,06_svm_oof \
---models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
---condition-sources exp07,exp07+aug \
---num-seeds 20
+  --journal-paper \
+  --resume \
+  --output-dir outputs/cross_comparison_full_aug_crf \
+  --isolate-splits \
+  --exp07-source auto \
+  --base-mode auto \
+  --models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
+  --experiments 01,04,05_ready,06_ready,06_svm_oof,06_svm_kernel_oof,06_nb_oof,06_lr_oof,06_rf_oof,06_mlp_oof,10_regular,10_cascade,10_fusion_ready,10_svm_oof,10_svm_kernel_oof,10_nb_oof,10_lr_oof,10_rf_oof,10_mlp_oof \
+  --condition-sources exp07,exp07+aug \
+  --num-seeds 20 \
+  --consolidated-error-analysis split
 ```
+
+`--journal-paper` adds the resume-aware loss-weight grids (Exp04 and, because CRF experiments are selected, the Exp10 CRF cascade) and keeps every explicitly passed flag; `--isolate-splits` keeps the Exp07 and Exp07+Aug split JSONs under `--output-dir`.
 
 The command runs a controlled comparison of Hebrew Named Entity Recognition (NER) methods. It is not only a script that calls other scripts. It is a complete experimental architecture with:
 
 1. several Hebrew and multilingual transformer encoders,
 2. several train/evaluation split strategies,
 3. augmentation-based data variants,
-4. base NER systems,
+4. base NER systems, with and without a CRF output layer,
 5. post-processing systems,
-6. fusion systems,
-7. paired multi-seed statistical testing,
+6. fusion systems, with learned routers evaluated by nested cross-validation,
+7. paired multi-seed (and seed × fold) statistical testing,
 8. cached base artifacts for reproducibility and efficiency.
 
 The main scientific question is:
 
-> How do different Hebrew transformer models behave under different sentence split and augmentation conditions, and can cascaded or fused prediction architectures improve entity-level NER performance?
+> How do different Hebrew transformer models behave under different sentence split and augmentation conditions, and can cascaded, CRF-decoded or fused prediction architectures improve entity-level NER performance?
 
-The pipeline compares five **core** experiments (01–06 ready track):
+The **non-CRF track** (Exp01–Exp06):
 
 | Experiment ID | Method name | Core idea |
 |---|---|---|
@@ -72,22 +80,28 @@ The pipeline compares five **core** experiments (01–06 ready track):
 | `06_rf_ready` | Random Forest Router Fusion (**appendix**) | Same ready protocol (**§12B.3**). |
 | `06_mlp_ready` | MLP Router Fusion (**appendix**) | Same ready protocol (**§12B.4**). |
 
-**Primary** ML routers: `fusion_router_oof_common.py` — see also [`thesis_overview_fusion_oof_cv.md`](thesis_overview_fusion_oof_cv.md).  
+**Primary** ML routers: `fusion_router_oof_common.py` (Part III).  
 **Appendix** ready routers: `fusion_router_ready_common.py` (no NER retraining; router fit on same eval tokens as scoring).
 
-**Optional extension — Experiment 10 (BERT-CRF track):** same cross-comparison runner, separate base cache, adds CRF decoding and CRF fusion (see **Section 12A** and `experiments/experiment_10_README.md`).
+**CRF track — Experiment 10:** the same protocol on BERT-CRF base models — holdout bases, confidence fusion, six primary OOF routers and its own loss-weight grid, with a separate base cache and OOF cache (see **Section 12A** and `experiments/experiment_10_README.md`).
 
 | Experiment ID | Method name | Core idea |
 |---|---|---|
 | `10_regular` | Regular BERT-CRF | Exp01-style single pass, but emissions + **linear-chain CRF** (Viterbi decode); **O-bias = 6**. |
-| `10_cascade` | Cascaded + CRF | Exp04-style three heads **plus** full-tag CRF head; Step-3 **B/I consistency** after decode. |
+| `10_cascade` | Cascaded + CRF | Exp04-style three heads **plus** full-tag CRF head; Step-3 **B/I consistency** after decode; λ from the CRF grid (**§12A.7**). |
 | `10_fusion_ready` | CRF confidence fusion | Fuses `10_regular` and `10_cascade` ready Excel outputs (no retraining). |
-| `10_svm_ready` | CRF linear SVM router | Same as `06_svm_ready` on CRF sources (**§12A.4**). |
-| `10_svm_kernel_ready` | CRF kernel SVM router | RBF `SVC` on CRF disagreements (**§12.5**). |
-| `10_nb_ready` | CRF Naive Bayes router | GaussianNB (**§12B.1**). |
-| `10_lr_ready` | CRF logistic regression router | (**§12B.2**). |
-| `10_rf_ready` | CRF random forest router | (**§12B.3**). |
-| `10_mlp_ready` | CRF MLP router | (**§12B.4**). |
+| `10_svm_oof` | CRF Linear SVM Router Fusion (**primary**) | Nested 5-fold CV + OOF on CRF disagreements (**§12A.6**). |
+| `10_svm_kernel_oof` | CRF Kernel SVM Router Fusion (**primary**) | Same protocol; RBF `SVC`. |
+| `10_nb_oof` | CRF Naive Bayes Router Fusion (**primary**) | Same protocol. |
+| `10_lr_oof` | CRF Logistic Regression Router Fusion (**primary**) | Same protocol. |
+| `10_rf_oof` | CRF Random Forest Router Fusion (**primary**) | Same protocol. |
+| `10_mlp_oof` | CRF MLP Router Fusion (**primary**) | Same protocol. |
+| `10_svm_ready` | CRF linear SVM router (**appendix**) | Same as `06_svm_ready` on CRF sources (**§12A.4**). |
+| `10_svm_kernel_ready` | CRF kernel SVM router (**appendix**) | RBF `SVC` on CRF disagreements (**§12.5**). |
+| `10_nb_ready` | CRF Naive Bayes router (**appendix**) | GaussianNB (**§12B.1**). |
+| `10_lr_ready` | CRF logistic regression router (**appendix**) | (**§12B.2**). |
+| `10_rf_ready` | CRF random forest router (**appendix**) | (**§12B.3**). |
+| `10_mlp_ready` | CRF MLP router (**appendix**) | (**§12B.4**). |
 
 The selected models are:
 
@@ -115,7 +129,7 @@ The selected condition sources are:
 | Source | Meaning |
 |---|---|
 | `exp07` | Sentence split strategies without augmentation. |
-| `exp07+aug` | The same Exp07 split variants, but the training side is augmented using the Exp08 LLM mask-fill augmentation mechanism. |
+| `exp07+aug` | The same Exp07 split variants, but the training side is augmented using the Exp08 LLM mask-fill augmentation mechanism (replacement vocabulary from the training split only, **§5.3**). OOF routers augment inside each training fold instead (**§5.4**). |
 
 The command uses `--num-seeds 20`, so the design is repeated with **20 fixed training seeds** $S$:
 
@@ -124,35 +138,35 @@ The command uses `--num-seeds 20`, so the design is repeated with **20 fixed tra
 
 Optional: `THESIS_CROSS_SEEDS_MASTER=<int>` when creating the file (reproducible draw); `--regenerate-training-seeds` to replace the list (requires rebuilding exp07+aug artifacts if used).
 
-**Growing the seed count mid-study (e.g. 10 → 20) without losing completed runs:** `--regenerate-training-seeds` draws a **brand-new fully random** list, discarding the old one — every run already completed under the original seeds becomes orphaned (new random seeds almost never match the old ones). To add seeds instead, append to `training_seeds.json` in place: keep all existing entries, draw additional unique random integers up to the new `--num-seeds` target, and write back the same `{"seeds": [...], "num_seeds": N}` schema, leaving `--regenerate-training-seeds` off. Checkpoint rows are keyed by seed value, so a plain `--resume` afterward trains only the newly-added seeds and reuses every already-completed run unchanged. See `thesis_overview_150_sentences.md` §4.3 for the exact snippet (used by `colab_150_sentences_journal_10seeds.ipynb` cell "7a2").
+**Growing the seed count mid-study (e.g. 10 → 20) without losing completed runs:** `--regenerate-training-seeds` draws a **brand-new fully random** list, discarding the old one — every run already completed under the original seeds becomes orphaned (new random seeds almost never match the old ones). To add seeds instead, append to `training_seeds.json` in place: keep all existing entries, draw additional unique random integers up to the new `--num-seeds` target, and write back the same `{"seeds": [...], "num_seeds": N}` schema, leaving `--regenerate-training-seeds` off. Checkpoint rows are keyed by seed value, so a plain `--resume` afterward trains only the newly-added seeds and reuses every already-completed run unchanged. Cell "6a" of `colab_full_aug_crf_journal.ipynb` implements this (same snippet as `thesis_overview_150_sentences.md` §4.3).
 
 This makes the experiment a paired repeated-measures design rather than a one-off model run.
 
-**IEEE journal profile (1–3 training seeds by default, 5-fold OOF fusion, journal export sheets):** see [`thesis_overview_journal_paper_results.md`](thesis_overview_journal_paper_results.md). `--journal-paper` defaults to `--num-seeds 3` only when `--num-seeds` is **not** explicitly passed; pass `--num-seeds 20` (or any value) explicitly to use more seeds under the journal profile — this is now honored correctly (previously, an explicit value that happened to equal the full-thesis default of `20` collided with the default-detection logic and was silently reset to `3`; fixed in `run_cross_data_model_comparison.py`). Primary significance is **paired across `training_seed × outer_fold`** in the `paired_fold_tests` sheet of `unified_protocol_table.xlsx` (Wilcoxon + t-test, Holm-adjusted, all fusion methods vs. Regular NER and Cascade NER) — more seeds directly increases the number of paired observations, so this is not an either/or against 5-fold OOF. Build it with `build_unified_protocol_table.py`; the runner's `journal_paired_fold_deltas` sheet is **not** emitted (Part V §V.1 explains why).
+**`--journal-paper` profile:** runs the resume-aware loss-weight grids (Exp04, and the Exp10 CRF cascade when CRF experiments are selected) and implies `--resume`. Its defaults — `--num-seeds 3`, `--condition-sources exp07`, experiments `01,04,06_svm_oof,06_rf_oof`, `--consolidated-error-analysis all` — apply **only to flags that are not passed explicitly**; the canonical command above passes all four, so it keeps 20 seeds, both condition sources, all 19 experiments and split-mode error analysis. Primary significance is **paired across `training_seed × outer_fold`** in `unified_protocol_table.xlsx` (Part V §V.1): `paired_fold_tests` (fusion vs. its track's base models), `paired_condition_tests` (exp07+aug vs. exp07) and `paired_track_tests` (CRF vs. non-CRF), all Holm-adjusted — more seeds directly increase the number of paired observations. Build it with `build_unified_protocol_table.py`; the runner's `journal_paired_fold_deltas` sheet is **not** emitted (Part V §V.1 explains why).
 
 ### 1.1 Full corpus vs 150-sentence pilot (isolated outputs)
 
-Two standard cross-comparison profiles share the **same model list** and experiments; they differ only in corpus size and output folder:
+The full corpus is the thesis run; the 150-sentence pilot is its smaller predecessor (DictaBERT + BEREL, `exp07` only, non-CRF only):
 
 | Profile | Corpus | CLI |
 |---|---|---|
-| **Full labeled set** (~300 sentences) | `data/ner_dataset.csv` | Default paths; omit `--subset-sentences`. Use `--output-dir outputs/cross_comparison_full` (recommended) so checkpoints do not mix with pilot runs. |
-| **150-sentence pilot** | Random 150 sentence ids (fixed by `--subset-seed`) | `--subset-sentences 150 --subset-seed 42 --output-dir outputs/cross_comparison_150sent` (splits + subset CSV live under that folder). **Methods:** [`thesis_overview_150_sentences_pilot.md`](thesis_overview_150_sentences_pilot.md); **OOF routers:** [`thesis_overview_fusion_oof_cv.md`](thesis_overview_fusion_oof_cv.md). |
-| **Full corpus OOF** (~300 sentences) | Full `ner_dataset.csv` | Same OOF protocol; ~60 sentences per outer fold. [`thesis_overview_fusion_oof_cv.md`](thesis_overview_fusion_oof_cv.md). |
+| **Full corpus — canonical thesis run** (~300 sentences, ~60 per outer fold) | `data/ner_dataset.pkl` | Command in §1 (notebook `colab_full_aug_crf_journal.ipynb`). Always use a dedicated `--output-dir` plus `--isolate-splits`, so splits, augmented splits, caches and checkpoints never mix with other runs and survive a Colab disconnect. |
+| **150-sentence pilot** | Random 150 sentence ids (fixed by `--subset-seed`) | `--subset-sentences 150 --subset-seed 42 --output-dir outputs/cross_comparison_150sent` (splits + subset CSV live under that folder). **Methods:** [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md). |
 
-**Full corpus (all six models, 20 seeds, no augmentation, no CRF):**
+**Reduced full-corpus profile (no augmentation, no CRF):**
 
 ```bash
 python run_cross_data_model_comparison.py \
   --output-dir outputs/cross_comparison_full \
+  --isolate-splits \
   --models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
-  --experiments 01,04,05_ready,06_ready,06_svm_oof \
+  --experiments 01,04,05_ready,06_ready,06_svm_oof,06_svm_kernel_oof,06_nb_oof,06_lr_oof,06_rf_oof,06_mlp_oof \
   --skip-augmentation \
   --condition-sources exp07 \
   --exp07-source auto \
   --base-mode auto \
   --num-seeds 20 \
-  --consolidated-error-analysis all
+  --consolidated-error-analysis split
 ```
 
 **150-sentence pilot (same models and exports; resume with `--resume`):**
@@ -181,7 +195,9 @@ fp16 on, weight decay **0**; Exp04 **10 epochs** (encoder **2e-5**), cascaded lo
 $\lambda_{bio}=10$, $\lambda_{type}=5$ unless replaced after the validation grid (**§9.4**). Re-run XLM-R/mT5 with wrong
 checkpoint rows cleared if they used older multilingual-only settings.
 
-Artifacts for the pilot: `{output-dir}/data/ner_dataset_150_seed42.csv`, `{output-dir}/exp07/splits/`, `{output-dir}/run_manifest.json`, plus `cross_comparison_*.xlsx/json` and consolidated error-analysis workbooks. The full-corpus run does **not** overwrite `outputs/exp07/splits/` when the pilot uses its own `--output-dir` and subset flags.
+Artifacts for the pilot: `{output-dir}/data/ner_dataset_150_seed42.csv`, `{output-dir}/exp07/splits/`, `{output-dir}/run_manifest.json`, plus `cross_comparison_*.xlsx/json` and consolidated error-analysis workbooks.
+
+Artifacts for the canonical full run (all under `{output-dir}`): `exp07/splits/` and `exp07_augmented/splits_train_vocab/` (`--isolate-splits`), `training_seeds.json`, `exp04_lambda_grid_cache/`, `exp10_lambda_grid_cache/`, `oof_router_cache/` (§7), `experiment_outputs/` (every per-run workbook), `run_manifest.json`, `cross_comparison_*.xlsx/json`, `consolidated_error_analysis_{non_exp10,exp10}_*.xlsx`, and `unified_protocol_table.xlsx` (Part V).
 
 ---
 
@@ -200,21 +216,23 @@ where:
 - $c$ is the data condition,
 - $s$ is the random seed.
 
-For this command:
+For the canonical command (§1):
 
 $$
-M = \{\text{DictaBERT}, \text{BEREL}, \text{HeRo}, \text{AlephBERT-Gimmel}\},
-$$
-
-$$
-E = \{01,04,05\_ready,06\_ready,06\_svm\_oof\},
+M = \{\text{DictaBERT}, \text{BEREL}, \text{HeRo}, \text{AlephBERT-Gimmel}, \text{XLM-R}, \text{mT5}\},
+\qquad |M| = 6,
 $$
 
 $$
-S = \{42,\ldots,61\}.
+E = E_{non\text{-}CRF} \cup E_{CRF},
+\qquad |E| = 10 + 9 = 19,
 $$
 
-The data condition set $C$ is built from saved Exp07 split variants and Exp07+Aug variants. If three Exp07 variants are available and three matching Exp07+Aug variants are available, then:
+with $E_{non\text{-}CRF} = \{01, 04, 05\_ready, 06\_ready\} \cup \{06\_r\_oof : r \in R\}$ and $E_{CRF} = \{10\_regular, 10\_cascade, 10\_fusion\_ready\} \cup \{10\_r\_oof : r \in R\}$ for the six routers $R = \{svm, svm\_kernel, nb, lr, rf, mlp\}$.
+
+$S$ is the list of **20 random seeds** persisted in `{output-dir}/training_seeds.json` (§1), $|S| = 20$.
+
+The data condition set $C$ is built from the Exp07 split variants and their Exp07+Aug counterparts. The current split generator produces three variants (baseline, label-aware, multilabel iterative; `split_meta.json` is authoritative), so:
 
 $$
 |C| = 3 + 3 = 6.
@@ -223,20 +241,24 @@ $$
 The number of seeded conditions is:
 
 $$
-|C_S| = |C| \times |S|.
-$$
-
-If $|C|=6$ and $|S|=20$:
-
-$$
-|C_S| = 6 \times 20 = 120.
+|C_S| = |C| \times |S| = 6 \times 20 = 120.
 $$
 
 The maximum number of result rows is:
 
 $$
-|M| \times |E| \times |C_S| = 4 \times 5 \times 120 = 2400.
+|M| \times |E| \times |C_S| = 6 \times 19 \times 120 = 13{,}680.
 $$
+
+**Training cost.** Per $(m, c_s)$ each track trains one holdout base pair and $K_{out}(K_{in}+1) = 5 \times (4+1) = 25$ OOF base pairs, shared by the six routers of that track:
+
+$$
+\text{holdout pairs} = |M|\,|C_S| \times 2 = 1{,}440,
+\qquad
+\text{OOF pairs} = |M|\,|C_S| \times 2 \times 25 = 36{,}000.
+$$
+
+That is about 12× the training pairs of the 150-sentence pilot (2 models, `exp07` only, non-CRF only: $3{,}000 + 120$), each on roughly twice as many sentences, and more on augmented folds. Router fitting and ready fusion are CPU-cheap by comparison.
 
 A beginner can understand the command as:
 
@@ -424,6 +446,10 @@ $$
 
 with deterministic seed-based tie-breaking.
 
+### 4.5 Split variants under nested CV (`*_oof`)
+
+OOF routers merge the condition's train and eval JSON into one corpus and re-split it into multilabel-stratified folds (§12C). Every Exp07 variant holds the same sentences, so under OOF the variant only fixes the corpus order — and with it which 5-fold partition a seed produces. The three variants therefore act as three independent repeated-CV partitions per seed, not as a split-strategy contrast; split-strategy claims come from the holdout runs (`01`, `04`, `05_ready`, `06_ready`, `10_regular`, `10_cascade`, `10_fusion_ready`).
+
 ---
 
 ## 5. Exp07+Aug: Augmented Split Conditions
@@ -506,6 +532,39 @@ $$
 
 The labels for generated sentences preserve the intended BIO structure. The purpose is not to invent a new evaluation target, but to expose the model to more rare-label contexts during training.
 
+### 5.3 Replacement vocabulary from the training split only
+
+Candidate entity surface forms for mask-filling are taken from the **training sentences of the split being augmented** (`sentences_to_token_df` in `experiments/experiment_08_llm_augmentation.py`), never from the evaluation side:
+
+$$
+V(\ell) = \{\, w : w \text{ carries label } B\text{-}\ell \text{ in } D_{train}^{(c)} \,\}.
+$$
+
+Augmented splits built this way record `vocabulary_scope: "train_split"` in `split_meta.json` and live in `exp07_augmented/splits_train_vocab/`. Files generated earlier with the full-corpus vocabulary stay in `exp07_augmented/splits/` and are never reused: base caches are keyed by split-file path, so new runs retrain on the new files. Holdout `exp07+aug` numbers from runs made before this change are therefore not comparable with the new ones.
+
+### 5.4 Augmentation inside nested CV (`exp07+aug` × `*_oof`)
+
+Running OOF routers on an augmented train JSON would put synthetic sentences into outer-test folds and score the models on generated data. Instead, for an `exp07+aug` condition the runner gives the OOF engine the **original** Exp07 split of that variant and sets `THESIS_OOF_AUGMENT=1`. The CV corpus
+
+$$
+D_{corpus}^{(c)} = D_{train}^{exp07(c)} \cup D_{eval}^{exp07(c)}
+$$
+
+is fold-assigned exactly as for the matching `exp07` condition. For outer fold $k$ (and likewise for every inner fold):
+
+$$
+D_{train,k}^{aug} = D_{train,k} \cup G\big(D_{train,k};\ V(D_{train,k}),\ s_k\big),
+\qquad
+D_{test,k}^{aug} = D_{test,k},
+$$
+
+where $G$ is the §5.2 generator, $V(D_{train,k})$ the entity vocabulary of the fold's training sentences only, and $s_k$ a deterministic per-fold seed. Consequences:
+
+1. no synthetic sentence and no test-side surface form enters any evaluation fold (inner-val or outer-test);
+2. `exp07_<v>` and `exp07aug_<v>` runs of the same seed share **every** outer and inner fold, so the augmentation effect is paired by seed × fold in `paired_condition_tests` (Part V);
+3. the augmented fold sets are cached once per (condition, seed) under `oof_router_cache/aug_<condition>_seed<s>/` and reused by all six encoders and both tracks; the augmentation model and multiplier are those of the holdout `exp07+aug` files;
+4. `fold_metrics` records the original and augmented training sizes and `synthetic_test_text_overlap` (generated sentences identical to an outer-test sentence; expected 0).
+
 ---
 
 ## 6. Model Resolution and Reproducibility Controls
@@ -533,6 +592,10 @@ For each run, the following environment variables are used to bind the scientifi
 | `THESIS_EXP04_LAMBDA_BIO` | Weight on boundary (B/I) loss in Exp04; default **10** (see **§9.4**). |
 | `THESIS_EXP04_LAMBDA_TYPE` | Weight on entity-type loss in Exp04; default **5** (see **§9.4**). |
 | `THESIS_EXP04_LAMBDA_GRID_VALUES` | Optional comma list for the validation grid (default `1,5,10`). |
+| `THESIS_EXP10_LAMBDA_BIO` / `THESIS_EXP10_LAMBDA_TYPE` | CRF-cascade (`10_cascade`) loss weights, set from the CRF grid (**§12A.7**); unset → the Exp04 weights. |
+| `THESIS_EXP10_LAMBDA_GRID_VALUES` | Optional comma list for the CRF grid (falls back to the Exp04 list). |
+| `THESIS_OOF_AUGMENT` / `THESIS_OOF_AUGMENTATION_MODEL` | Set by the runner for `*_oof` runs on `exp07+aug` conditions (in-fold augmentation, **§5.4**). |
+| `THESIS_ISOLATE_SPLITS` | `1` = `--isolate-splits` (Exp07 / Exp07+Aug split JSONs under `--output-dir`). |
 
 The important beginner idea is:
 
@@ -544,9 +607,19 @@ The important beginner idea is:
 
 Experiments `01` and `04` are expensive because they train transformer-based systems. Experiments `05_ready` and `06_ready` are cheaper because they operate on already saved predictions. **`06_*_oof`** is the most expensive fusion path (repeated Exp01 + Exp04 training inside nested CV); **`06_*_ready`** is cheap appendix inference on cached bases.
 
-**Exp04 loss weights:** Before locking multi-seed cross-comparison runs, run the validation grid once (`experiments/experiment_04_loss_weight_grid.py`) and export the selected `THESIS_EXP04_LAMBDA_BIO` / `THESIS_EXP04_LAMBDA_TYPE` for all later Exp04 training (including OOF retrains). Details: **§9.4**, [`cross_comparison_fair_training_overview.md`](cross_comparison_fair_training_overview.md), [`thesis_overview_150_sentences_pilot.md`](thesis_overview_150_sentences_pilot.md) §8.
+**Exp04 loss weights:** Before locking multi-seed cross-comparison runs, run the validation grid once (`experiments/experiment_04_loss_weight_grid.py`) and export the selected `THESIS_EXP04_LAMBDA_BIO` / `THESIS_EXP04_LAMBDA_TYPE` for all later Exp04 training (including OOF retrains); `--journal-paper` does this automatically. The CRF cascade has its own grid and `THESIS_EXP10_LAMBDA_*` (**§12A.7**). Details: **§9.4**, Part II, [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md) §8.
 
-Experiment **10** adds another **training** pair (`10_regular`, `10_cascade`) with the same cost profile as `01`/`04`, plus **inference-only** fusion IDs (`10_fusion_ready`, `10_svm_ready`) analogous to the 06 ready track. Base artifacts are stored in `cross_comparison_base_crf_ready_index.json` (separate from the Exp01/Exp04 cache).
+Experiment **10** adds another **training** pair (`10_regular`, `10_cascade`) with the same cost profile as `01`/`04`, inference-only confidence fusion (`10_fusion_ready`, plus the appendix `10_*_ready` routers), and the primary CRF routers `10_*_oof` with the same nested-CV cost as `06_*_oof`. Holdout base artifacts are stored in `cross_comparison_base_crf_ready_index.json` (separate from the Exp01/Exp04 cache).
+
+**OOF fold cache.** `*_oof` runs never use the holdout base caches; they train their own fold pairs and keep them in `{output-dir}/oof_router_cache/`:
+
+| Folder | Content |
+|---|---|
+| `<model>_<condition>_seed<s>/` | Non-CRF fold pairs (`exp01_metrics.xlsx`, `exp04_metrics.xlsx`) per `outer<k>_inner<j>` / `outer<k>_final`, shared by the six `06_*_oof` routers |
+| `crf_<model>_<condition>_seed<s>/` | CRF fold pairs (`exp10_regular_metrics.xlsx`, `exp10_cascade_metrics.xlsx`), shared by the six `10_*_oof` routers |
+| `aug_<condition>_seed<s>/` | Augmented fold-train JSONs of `exp07+aug` conditions (§5.4), shared by all encoders and both tracks |
+
+Fold workbooks are moved (not copied) from `experiment_outputs/` into this cache, so every training is stored once.
 
 The command uses:
 
@@ -895,6 +968,8 @@ export THESIS_EXP04_LAMBDA_TYPE=<selected>
 ```
 
 Environment overrides are read in `core/auc_cascaded_pipeline.py` (`THESIS_EXP04_LAMBDA_BIO`, `THESIS_EXP04_LAMBDA_TYPE`). If the grid selects $(10,5)$ or lies on a flat region near those defaults, existing main results remain valid; the grid still supplies the ablation evidence for the paper.
+
+**Runner integration.** `--journal-paper` (or `--calibrate-exp04-loss-weights`) runs this grid resume-aware into `{output-dir}/exp04_lambda_grid_cache/` before the comparison whenever Exp04 training is selected (`04`, ready experiments that may train the base pair, `06_*_oof`), and sets the selection for every Exp04 training of the run, including all OOF fold retrains. The grid uses the default calibration encoder and the first training seed; the selected pair applies to every encoder. The CRF cascade adds a CRF loss term and is calibrated by its own grid (**§12A.7**).
 
 ### 9.5 Focal Loss for Imbalance
 
@@ -1365,29 +1440,31 @@ Important limitation (**appendix** ready ML routers only — `06_*_ready`):
 
 > The ready variants train and evaluate the router on the same ready output set. Treat their F1 as an **in-sample routing upper bound** for appendix figures only. **Primary** thesis fusion results use **`06_*_oof`** (§12C).
 
-### 12C. Primary protocol — Nested stratified CV + OOF (`06_*_oof`)
+### 12C. Primary protocol — Nested stratified CV + OOF (`06_*_oof`, `10_*_oof`)
 
-**Reference:** [`thesis_overview_fusion_oof_cv.md`](thesis_overview_fusion_oof_cv.md)  
+**Reference:** Part III of this document  
 **Code:** `experiments/fusion_router_oof_common.py`, `multilabel_stratified_kfold_assignments` in `exp07_split_artifacts.py`.
 
-For each Exp07 **condition** and training **seed**, the OOF runner merges that condition’s train + eval sentence JSON (150 or ~300 sentences depending on profile), then:
+For each **condition** and training **seed**, the OOF runner merges that condition’s train + eval sentence JSON (150 or ~300 sentences depending on profile; for `exp07+aug` the **original** Exp07 split, §5.4), then:
 
-1. Assigns sentences to **5** outer folds (default) with multilabel stratification.
-2. On outer-train (~80%): runs **4**-fold inner OOF Exp01 + Exp04 training to build clean disagreement features for router training.
+1. Assigns sentences to **5** outer folds (default) with multilabel stratification (seed `THESIS_SPLIT_SEED + 1000`).
+2. On outer-train (~80%): runs **4**-fold inner OOF training of the track's base pair (Exp01 + Exp04 for `06_*_oof`; Exp10 regular + Exp10 cascade for `10_*_oof`) to build clean disagreement features for router training. On `exp07+aug` each inner-train set is augmented in-fold.
 3. Fits the sklearn router (same §12.1–§12.2 features/targets as ready).
-4. Retrains Exp01 + Exp04 on full outer-train; evaluates fused predictions on outer-test (~20%).
+4. Retrains the base pair on full outer-train (augmented in-fold on `exp07+aug`); evaluates fused predictions on outer-test (~20%, never augmented).
 5. Pools outer-test predictions → **one** entity-level F1 over all sentences (no router leakage).
 
-Environment: `THESIS_ROUTER_OOF_OUTER_FOLDS` (default `5`), `THESIS_ROUTER_OOF_INNER_FOLDS` (default `4`), cache `{--output-dir}/oof_router_cache/`.
+Environment: `THESIS_ROUTER_OOF_OUTER_FOLDS` (default `5`), `THESIS_ROUTER_OOF_INNER_FOLDS` (default `4`), cache `{--output-dir}/oof_router_cache/` (§7).
 
-| Runner ID | Classifier |
-|---|---|
-| `06_svm_oof` | `LinearSVC` |
-| `06_svm_kernel_oof` | RBF `SVC` |
-| `06_nb_oof` | `GaussianNB` |
-| `06_lr_oof` | `LogisticRegression` |
-| `06_rf_oof` | `RandomForestClassifier` |
-| `06_mlp_oof` | `MLPClassifier` |
+| Runner ID (non-CRF) | Runner ID (CRF, §12A.6) | Classifier |
+|---|---|---|
+| `06_svm_oof` | `10_svm_oof` | `LinearSVC` |
+| `06_svm_kernel_oof` | `10_svm_kernel_oof` | RBF `SVC` |
+| `06_nb_oof` | `10_nb_oof` | `GaussianNB` |
+| `06_lr_oof` | `10_lr_oof` | `LogisticRegression` |
+| `06_rf_oof` | `10_rf_oof` | `RandomForestClassifier` |
+| `06_mlp_oof` | `10_mlp_oof` | `MLPClassifier` |
+
+The fold assignment depends only on the corpus order and the seed, so for one (condition, seed) the non-CRF and CRF routers — and the `exp07` / `exp07+aug` versions of a variant — are evaluated on identical outer folds; Part V pairs them fold by fold. Every result workbook's `metrics` sheet records `track`, `augmentation`, `lambda_bio` / `lambda_type` and `protocol = nested_stratified_cv_oof`.
 
 Legacy single-split train/eval router training (no nested CV) remains in `experiment_06_fusion_svm.py` for ad-hoc runs.
 
@@ -1439,21 +1516,27 @@ Shared logic: `fusion_router_ready_common.py`.
 
 ---
 
-## 12A. Experiment 10 — BERT-CRF Extension (Optional Cross-Comparison Branch)
+## 12A. Experiment 10 — BERT-CRF Track
 
 Experiment 10 implements **future-work items** from the thesis plan: replace (or augment) independent softmax tagging with a **Conditional Random Field** so **BIO transition structure** is learned during training, not only repaired afterward (compare Exp05_ready).
 
-It is **additive**: Experiments 01, 04, and 05/06 ready paths are unchanged. Exp10 uses its **own output folders** (`outputs/exp10_regular/`, `outputs/exp10_cascade/`, …) and **own base cache index**.
+It is **additive**: Experiments 01, 04, and 05/06 paths are unchanged. Exp10 uses its **own output folders** (`exp10_regular/`, `exp10_cascade/`, `10_*_oof/` under `experiment_outputs/`), **own base cache index** and **own OOF cache** (`crf_*` folders). The CRF track follows the same protocol as the non-CRF track: holdout bases on every condition and seed, confidence fusion, six primary OOF routers (`10_*_oof`, §12A.6) and its own loss-weight grid (§12A.7).
 
 **Teaching documentation:** `experiments/experiment_10_README.md`  
-**Code map:** `core/crf_layer.py`, `core/bert_crf_training.py`, `core/cascaded_crf_runtime.py`
+**Code map:** `core/crf_layer.py`, `core/bert_crf_training.py`, `core/cascaded_crf_runtime.py`, `experiments/fusion_router_oof_common.py` (CRF base track)
 
-Example command:
+Example command (CRF track only):
 
 ```bash
 python run_cross_data_model_comparison.py \
-  --experiments 10_regular,10_cascade,10_fusion_ready,10_svm_ready \
+  --journal-paper \
+  --output-dir outputs/cross_comparison_crf \
+  --isolate-splits \
+  --experiments 10_regular,10_cascade,10_fusion_ready,10_svm_oof,10_svm_kernel_oof,10_nb_oof,10_lr_oof,10_rf_oof,10_mlp_oof \
+  --condition-sources exp07,exp07+aug \
+  --num-seeds 20 \
   --models dictabert,berel \
+  --consolidated-error-analysis exp10 \
   --base-mode auto
 ```
 
@@ -1479,6 +1562,8 @@ $$
 
 This is the same structural idea as classical NER-CRF, but emissions come from **BERT** rather than hand-crafted features.
 
+**Encoders:** the encoder is loaded with `load_encoder_backbone` and pre-split words are tokenized with `encode_words_for_ner` (`core/model_backbone.py`), so all six registry encoders work (mT5 → `MT5EncoderModel`; RoBERTa-style HeRo / XLM-R with `add_prefix_space`). Training uses the Exp01 profile (`THESIS_NUM_EPOCHS`, fp16 on Colab GPU).
+
 ### 12A.2 Experiment 10_cascade — Cascaded Heads + Full-Tag CRF
 
 Exp04 trains three heads (entity, B/I, type) and **composes** their outputs. Exp10 **retains** those heads for diagnostic step F1, and adds a **joint head** over full BIO-type labels with CRF loss.
@@ -1490,6 +1575,15 @@ $$
 $$
 
 Controlled by `THESIS_STEP3_BI_TYPE_RECONCILE=1` in the cascaded wrapper script.
+
+Training loss (Exp04 `TRAINING_CONFIG` for epochs, batches and learning rates):
+
+$$
+\mathcal{L} = \mathcal{L}_{entity} + \lambda_{bio}\mathcal{L}_{bio} + \lambda_{type}\mathcal{L}_{type} + \lambda_{crf}\,\mathcal{L}_{CRF},
+\qquad \lambda_{crf} = 0.5,
+$$
+
+with $\lambda_{bio}$, $\lambda_{type}$ from the CRF grid (§12A.7). Every Exp10 cascade workbook records the weights in its `loss_config` sheet.
 
 ### 12A.3 Experiment 10_fusion_ready — Confidence Fusion on CRF Outputs
 
@@ -1510,7 +1604,7 @@ $$
 \end{cases}
 $$
 
-### 12A.4 Experiment 10 ML routers on CRF disagreements
+### 12A.4 Experiment 10 ready ML routers on CRF disagreements (appendix)
 
 Same **router feature schema** (§12.2.1–§12.2.3) and **classifier choices** as §12.3–§12B (`10_svm_ready`, `10_svm_kernel_ready`, `10_nb_ready`, `10_lr_ready`, `10_rf_ready`, `10_mlp_ready`), applied to **CRF** disagreement tokens. Only $p_i^{reg}$ definition differs (§11.2.1 emission on Viterbi tag); all seven numeric and four categorical columns are built by the same merge loader. Router targets:
 
@@ -1520,13 +1614,45 @@ $$
 
 only when exactly one of $\hat{y}_i^{reg}, \hat{y}_i^{cas}$ equals $y_i$.
 
+Like `06_*_ready`, these routers are fit and scored on the same eval tokens: an in-sample routing upper bound for the appendix. The primary CRF routers are `10_*_oof` (§12A.6).
+
 ### 12A.5 Caching, Cleanup, and Error Analysis
 
-**Base cache:** `_ensure_base_artifacts_crf` trains or reuses `10_regular` + `10_cascade` per $(m,c)$ and records paths in `cross_comparison_base_crf_ready_index.json`.
+**Base cache:** `_ensure_base_artifacts_crf` trains or reuses `10_regular` + `10_cascade` per $(m,c)$ and records paths in `cross_comparison_base_crf_ready_index.json`. OOF runs use their own fold cache (`oof_router_cache/crf_*`, §7).
 
 **Disk cleanup:** after training, checkpoint directories may be deleted (`THESIS_DELETE_MODELS_AFTER_TRAIN=1`) while **Excel/JSON metrics are retained**.
 
-**Consolidated error analysis:** when any Exp10 ID is selected, the runner merges error-analysis workbooks into `outputs/cross_comparison/consolidated_error_analysis_exp10_<timestamp>.xlsx`.
+**Consolidated error analysis:** with `--consolidated-error-analysis split` (or `exp10`) the runner merges every Exp10 workbook — bases, `10_fusion_ready`, `10_*_oof` and appendix routers — into `{output-dir}/consolidated_error_analysis_exp10_<timestamp>.xlsx` (`summary_crf_*` tabs per encoder).
+
+### 12A.6 Primary CRF protocol — nested CV + OOF (`10_*_oof`)
+
+Identical to §12C with the CRF base pair: inside every inner and outer fold the engine trains `10_regular` and `10_cascade` (`experiment_10_regular_ner_crf.run`, `experiment_10_cascaded_pipeline_crf.run`), loads their predictions with the same loaders as `10_fusion_ready` (emission-softmax $p^{reg}$, entity × bio $p^{cas}$), and fits the same six routers on OOF CRF disagreements. Agreement passthrough, router targets, features and the confidence fallback are unchanged; routing source tags read `*_regular_crf` / `*_cascade_crf`. Results are written to `experiment_outputs/10_<router>_oof/fusion_<router>_crf_oof_*.xlsx` with `track = crf` in the `metrics` sheet.
+
+Because both tracks re-split the same corpus with the same seed, every `10_*_oof` run shares its outer folds with the matching `06_*_oof` run, and `build_unified_protocol_table.py` pairs them fold by fold (`paired_track_tests`, Part V). On `exp07+aug` conditions the CRF folds train on the same cached augmented fold sets as the non-CRF folds (§5.4).
+
+| Runner ID | Module | Classifier |
+|---|---|---|
+| `10_svm_oof` | `experiment_10_fusion_svm_oof.py` | `LinearSVC` |
+| `10_svm_kernel_oof` | `experiment_10_fusion_svm_kernel_oof.py` | RBF `SVC` |
+| `10_nb_oof` | `experiment_10_fusion_nb_oof.py` | `GaussianNB` |
+| `10_lr_oof` | `experiment_10_fusion_lr_oof.py` | `LogisticRegression` |
+| `10_rf_oof` | `experiment_10_fusion_rf_oof.py` | `RandomForestClassifier` |
+| `10_mlp_oof` | `experiment_10_fusion_mlp_oof.py` | `MLPClassifier` |
+
+### 12A.7 CRF cascade loss weights (separate validation grid)
+
+The CRF term changes the optimisation landscape, so the Exp04 optimum need not transfer. A separate grid ($\lambda_{bio}, \lambda_{type} \in \{1, 5, 10\}$, nine `10_cascade` trainings on the same validation split and selection metric as §9.4, i.e. validation pipeline span F1 of the Viterbi decode after the threshold sweep) runs whenever `10_cascade`, an Exp10 ready experiment or a `10_*_oof` id is selected under `--journal-paper` / `--calibrate-exp04-loss-weights`:
+
+| Item | Value |
+|---|---|
+| Cache | `{output-dir}/exp10_lambda_grid_cache/` (`exp10_lambda_grid_progress.json`, `exp10_lambda_selection.json`, heatmap workbook) |
+| Env set for training | `THESIS_EXP10_LAMBDA_BIO`, `THESIS_EXP10_LAMBDA_TYPE` (unset → Exp04 weights) |
+| Recorded per run | `loss_config` sheet of every Exp10 cascade workbook (`lambda_bio`, `lambda_type`, `lambda_crf`, `lambda_source`) → `journal_loss_config` |
+| Manifest | `run_manifest.json` → `exp10_lambda_calibration` |
+| Flags | `--regenerate-exp10-loss-grid` re-runs it; `--skip-exp04-loss-calibration` skips both grids |
+| Standalone | `python experiments/experiment_04_loss_weight_grid.py exp10` (`THESIS_EXP10_LAMBDA_GRID_VALUES` optional) |
+
+As for Exp04, one pair is calibrated on the default calibration encoder and the first training seed and then applied to every encoder, every holdout run and every OOF fold retrain of the CRF cascade.
 
 ---
 
@@ -1595,13 +1721,13 @@ Beginner explanation:
 
 ## 14. Paired Seed Design
 
-The same seed list is used across all models, methods, and compatible conditions:
+The same seed list is used across all models, methods, and compatible conditions: the 20 random seeds persisted in `{output-dir}/training_seeds.json` (§1),
 
 $$
-S = \{42,43,\ldots,61\}.
+S = \{s_1, s_2, \ldots, s_{20}\}.
 $$
 
-This creates paired observations. For example, the F1 of split-only seed 42 can be compared directly with split+augmentation seed 42.
+This creates paired observations. For example, the F1 of split-only seed $s_1$ can be compared directly with split+augmentation seed $s_1$.
 
 For a pair of conditions $A$ and $B$, define:
 
@@ -1670,6 +1796,18 @@ p < 0.05
 $$
 
 is marked as statistically significant.
+
+### 14.1 Fold-level pairing under nested CV
+
+For `*_oof` runs the unit of pairing is $(s, k)$ — training seed × outer fold — so 20 seeds and 5 outer folds give $n = 100$ pairs per contrast. The outer-fold assignment depends only on the (original) corpus order and $s$, which makes three kinds of contrast exactly paired:
+
+| Contrast | Why the folds match | Sheet (`unified_protocol_table.xlsx`) |
+|---|---|---|
+| Fusion vs. its track's base models | Same pooled outer-test tokens of one run | `paired_fold_tests` |
+| `exp07+aug` vs. `exp07` (same variant) | In-fold augmentation keeps the original corpus (§5.4) | `paired_condition_tests` |
+| CRF vs. non-CRF (same method family) | Both tracks re-split the same corpus with the same seed | `paired_track_tests` |
+
+Every cross-condition / cross-track sheet reports `fold_size_mismatches`, which must be 0. Holm correction runs within each sheet's family (Part V §V.1). The seed-level `paired_tests` sheet of the runner (one pooled F1 per seed) remains available for every experiment, including the holdout ones.
 
 ---
 
@@ -1740,17 +1878,17 @@ The runner reads:
 - resume mode,
 - base artifact mode.
 
-It validates that the experiment IDs and model keys exist.
+It validates that the experiment IDs and model keys exist, loads (or creates) `training_seeds.json`, and — under `--journal-paper` / `--calibrate-exp04-loss-weights` — runs or reuses the loss-weight grids: Exp04 when Exp04 training is selected, the Exp10 CRF cascade when CRF training is selected (§9.4, §12A.7).
 
 ### Step 2: Prepare Exp07 Splits
 
-The runner checks:
+The runner checks (with `--isolate-splits`, under `{output-dir}` instead of `outputs/`):
 
 ```text
 outputs/exp07/splits/split_meta.json
 ```
 
-If the saved split metadata and files exist, it reuses them. If they are missing and `--exp07-source auto` is active, it regenerates Exp07 split artifacts.
+If the saved split metadata and files exist, it reuses them. If they are missing and `--exp07-source auto` is active, it regenerates Exp07 split artifacts (deterministic: same seed and ratio, same files).
 
 ### Step 3: Prepare Exp08 Machinery
 
@@ -1758,7 +1896,7 @@ Even though the selected condition sources are `exp07` and `exp07+aug`, the runn
 
 ### Step 4: Prepare Exp07+Aug Splits
 
-For each Exp07 variant and each seed, the runner creates or reuses:
+For each Exp07 variant and each seed, the runner creates or reuses (replacement vocabulary from that variant's training split, §5.3):
 
 $$
 D_{train}^{aug(c,s)},
@@ -1766,10 +1904,10 @@ D_{train}^{aug(c,s)},
 D_{eval}^{c,s}.
 $$
 
-The augmented files are saved under:
+The augmented files are saved under (with `--isolate-splits`, under `{output-dir}`):
 
 ```text
-outputs/exp07_augmented/splits/
+outputs/exp07_augmented/splits_train_vocab/
 ```
 
 ### Step 5: Build Base Conditions
@@ -1783,7 +1921,8 @@ The runner creates a list of base condition dictionaries. Each condition stores:
 - train split path,
 - eval split path,
 - baseline marker,
-- optional seed-specific file map.
+- optional seed-specific file map,
+- for `exp07+aug`: the original Exp07 train/eval paths of the variant (used by the OOF routers, §5.4).
 
 ### Step 6: Expand Conditions by Seed
 
@@ -1839,16 +1978,18 @@ If already available:
 1. reuse the existing files,
 2. avoid retraining.
 
+`06_*_oof` and `10_*_oof` skip this step: each run trains its own fold pairs into `oof_router_cache/` (§7, §12C). On `exp07+aug` conditions their presplit files are the original Exp07 split and `THESIS_OOF_AUGMENT=1` switches on in-fold augmentation (§5.4).
+
 ### Step 9: Run Ready Experiments
 
-For `05_ready`, `06_ready`, and `06_svm_ready`, the runner injects:
+For `05_ready`, `06_ready`, and the `06_*_ready` routers, the runner injects:
 
 ```text
 THESIS_READY_EXP01_XLSX
 THESIS_READY_EXP04_XLSX
 ```
 
-For `10_fusion_ready` and `10_svm_ready`, the runner injects:
+For `10_fusion_ready` and the `10_*_ready` routers, the runner injects:
 
 ```text
 THESIS_READY_EXP10_REGULAR_XLSX
@@ -1859,21 +2000,23 @@ Then the ready experiment reads exactly those matched files.
 
 ### Step 10: Save Checkpoint After Every Run
 
-After each run, the runner writes progress to:
+After each run, the runner writes progress to (`{output-dir}` when `--output-dir` is set):
 
 ```text
 outputs/cross_comparison/cross_comparison_progress_latest.json
 ```
 
-This supports `--resume`.
+This supports `--resume`. Resume keeps only checkpoint rows that match the current models, experiments and conditions, so pass the same lists on every resume.
 
 ### Step 11: Aggregate Results and Export
 
-At the end, the runner writes Excel and JSON outputs under:
+At the end, the runner writes Excel and JSON outputs under `--output-dir` (default):
 
 ```text
 outputs/cross_comparison/
 ```
+
+The paper tables are then built from those outputs with `build_unified_protocol_table.py` (Part V §V.1).
 
 ---
 
@@ -1905,6 +2048,7 @@ The workbook contains sheets with different scientific roles.
 | `variant_summary` | Aggregate statistics per condition across models and experiments. |
 | `experiment_details` | File paths, status, timing, and detailed metadata. |
 | `documentation` | Built-in explanation of workbook interpretation. |
+| `journal_*` | Journal sheets (Part IV): main table, OOF fold summary / long table, loss configs, λ grid selections for both cascades. |
 
 The JSON output contains the same information in machine-readable format:
 
@@ -1917,6 +2061,13 @@ A latest copy is also written:
 ```text
 outputs/cross_comparison/cross_comparison_latest.json
 ```
+
+Companion workbooks:
+
+| File | Meaning |
+|---|---|
+| `consolidated_error_analysis_non_exp10_<ts>.xlsx` / `consolidated_error_analysis_exp10_<ts>.xlsx` | Merged error analysis in split mode: `summary_non_crf_*` / `summary_crf_*` tabs (overall + one per encoder) with error types, routing decisions per router and split × augmentation breakdowns |
+| `unified_protocol_table.xlsx` | Built afterwards by `build_unified_protocol_table.py`: every OOF method re-scored on identical outer-test tokens, plus the fold-paired tests (Part V §V.1) |
 
 ---
 
@@ -1946,11 +2097,13 @@ $$
 D_{eval}^{aug} = D_{eval}.
 $$
 
+The same holds inside nested CV: on `exp07+aug` conditions only inner-train and outer-train folds are augmented, inner-val and outer-test folds never are, and the replacement vocabulary comes from the fold's own training sentences (§5.3–§5.4).
+
 ### 18.3 Ready Experiments Depend on Base Outputs
 
 `05_ready`, `06_ready`, and `06_svm_ready` are not independent training methods. They are downstream methods applied to Exp01 and/or Exp04 outputs.
 
-Experiment **10** ready fusion methods depend on **`10_regular` + `10_cascade`** outputs (not on Exp01/Exp04).
+Experiment **10** ready fusion methods depend on **`10_regular` + `10_cascade`** outputs (not on Exp01/Exp04). The OOF routers (`06_*_oof`, `10_*_oof`) do not depend on the holdout bases at all: they train their own base pairs inside every fold.
 
 The dependency graph is:
 
@@ -1975,10 +2128,10 @@ Exp10_cascade ─┤
 
 | Protocol | Experiment IDs | Interpretation |
 |---|---|---|
-| **Primary** | `06_*_oof` | Nested stratified CV + OOF; report in main tables / abstract. |
+| **Primary** | `06_*_oof`, `10_*_oof` | Nested stratified CV + OOF; report in main tables / abstract. |
 | **Appendix** | `06_*_ready`, `10_*_ready` routers | Router trained and scored on the same eval tokens → **in-sample routing upper bound** only. |
 
-Do not compare ready-router F1 directly to Exp01 held-out test F1 without a **Protocol** column.
+Do not compare ready-router F1 directly to Exp01 held-out test F1 without a **Protocol** column, and do not mix OOF and 70/30 holdout F1 in one table (Part III §6).
 
 ### 18.5 F1 Is Strict Entity-Level F1
 
@@ -2081,11 +2234,15 @@ Confidence-based fusion successfully exploits complementary strengths of the dir
 
 ### If Exp06_svm_ready improves over Exp06_ready
 
-The disagreement pattern contains learnable information beyond raw confidence. The SVM router can identify when the regular model or cascaded model is more reliable.
+The disagreement pattern contains learnable information beyond raw confidence. The SVM router can identify when the regular model or cascaded model is more reliable. Confirm it with the OOF routers (`06_*_oof`, `10_*_oof`) before claiming it: ready routers are an in-sample upper bound.
+
+### If CRF variants beat their non-CRF counterparts
+
+Learning BIO transition structure during training (Viterbi decoding) adds value beyond post-hoc repair (Exp05). Read the evidence from `paired_track_tests`, where both tracks are scored on identical folds, per method family (direct, cascade, confidence fusion, each router).
 
 ### If Exp07+Aug improves over Exp07
 
-LLM-generated training examples help the model generalize better, especially for rare or underrepresented entity labels.
+LLM-generated training examples help the model generalize better, especially for rare or underrepresented entity labels. Under nested CV the same question is answered fold by fold in `paired_condition_tests`, for the base models and for every fusion method of both tracks.
 
 ### If Exp07+Aug does not improve
 
@@ -2113,7 +2270,7 @@ $$
 
 ## 21. Short Plain-English Summary
 
-This pipeline is a rigorous experimental system for Hebrew NER. It tests **six** transformer encoders (four Hebrew-focused and two multilingual baselines) across multiple train/evaluation split strategies and augmented data variants. It compares a direct NER model, a cascaded three-step model, a structural consistency repair method, a confidence-based fusion method, and an SVM-based fusion method. Every comparison is repeated across 20 paired seeds so that improvements can
+This pipeline is a rigorous experimental system for Hebrew NER. It tests **six** transformer encoders (four Hebrew-focused and two multilingual baselines) across multiple train/evaluation split strategies and augmented data variants. On two architecture tracks — softmax tagging and CRF decoding — it compares a direct NER model, a cascaded three-step model, a structural consistency repair method, a confidence-based fusion method, and six learned fusion routers evaluated by nested 5-fold cross-validation. Every comparison is repeated across 20 paired seeds, and the fusion, augmentation and CRF effects are tested on identical folds (seed × fold pairing, Holm-adjusted).
 
 # Part II — Fair training hyperparameters
 
@@ -2141,10 +2298,14 @@ The reference profile matches the **completed Colab run** for DictaBERT and BERE
 | **Exp04** | Grad accum | **2** | `THESIS_EXP04_GRAD_ACCUM` |
 | **Exp04** | Loss weight $\lambda_{bio}$ | **10** (default) | `THESIS_EXP04_LAMBDA_BIO` |
 | **Exp04** | Loss weight $\lambda_{type}$ | **5** (default) | `THESIS_EXP04_LAMBDA_TYPE` |
+| **Exp10 regular** | Epochs / LR / fp16 | Same as Exp01 (HF Trainer) | `THESIS_NUM_EPOCHS`, `THESIS_TRAINER_FP16` |
+| **Exp10 cascade** | Epochs / batches / LRs | Same as Exp04 (`TRAINING_CONFIG`) | `THESIS_EXP04_EPOCHS`, … |
+| **Exp10 cascade** | Loss weights $\lambda_{bio}$, $\lambda_{type}$ | CRF grid selection (fallback: Exp04 values) | `THESIS_EXP10_LAMBDA_BIO`, `THESIS_EXP10_LAMBDA_TYPE` |
+| **Exp10 cascade** | CRF loss weight $\lambda_{crf}$ | **0.5** | (fixed: `CRF_LOSS_WEIGHT` in `core/cascaded_crf_runtime.py`) |
 
-Exp05 / Exp06 “ready” and fusion steps **reuse** Exp01/Exp04 artifacts; they do not change base training hyperparameters.
+Exp05 / Exp06 / Exp10 “ready” fusion steps **reuse** the holdout base artifacts; they do not change base training hyperparameters. The OOF routers (`06_*_oof`, `10_*_oof`) retrain their base pair inside every fold with exactly this profile.
 
-**Calibrating $\lambda_{bio}$, $\lambda_{type}$:** Run `experiments/experiment_04_loss_weight_grid.py` once per split policy (default grid `{1,5,10}^2` on validation). Set `THESIS_EXP04_LAMBDA_BIO` and `THESIS_EXP04_LAMBDA_TYPE` from the `selection` sheet in `outputs/exp04_lambda_grid/` **before** cross-comparison. Exported automatically to `cross_comparison_*.xlsx` sheets **`journal_lambda_grid`** / **`journal_loss_config`** and consolidated **`loss_config_summary`**. Full paper workflow: [`thesis_overview_journal_paper_results.md`](thesis_overview_journal_paper_results.md).
+**Calibrating $\lambda_{bio}$, $\lambda_{type}$:** `--journal-paper` runs the validation grid (`{1,5,10}^2`) for Exp04 and, when CRF experiments are selected, a separate grid for the Exp10 CRF cascade (Part I §9.4, §12A.7), caching the selections under `{output-dir}/exp04_lambda_grid_cache/` and `exp10_lambda_grid_cache/`. Standalone: `python experiments/experiment_04_loss_weight_grid.py [exp04|exp10]`. Exported automatically to `cross_comparison_*.xlsx` sheets **`journal_lambda_grid`** / **`journal_loss_config`** and consolidated **`loss_config_summary`**.
 
 ---
 
@@ -2248,6 +2409,12 @@ python run_cross_data_model_comparison.py \
 
 - Consume cached metrics and probabilities from Exp01/Exp04; no separate encoder fine-tuning hyperparameter table.
 
+### Exp10 — CRF track (`10_regular`, `10_cascade`, `10_*_oof`)
+
+- `10_regular` uses the Exp01 Trainer profile; the encoder is loaded with `load_encoder_backbone` and words are tokenized with `encode_words_for_ner`, so every registry encoder (including HeRo, XLM-R and mT5) runs on the CRF track.
+- `10_cascade` reuses the Exp04 `TRAINING_CONFIG` and adds the CRF term ($\lambda_{crf}=0.5$); $\lambda_{bio}$, $\lambda_{type}$ come from its own grid and are written to the `loss_config` sheet of every Exp10 cascade workbook.
+- `10_*_oof` retrains both CRF bases inside every outer / inner fold with the same settings.
+
 ---
 
 ## Overriding for a new study
@@ -2288,17 +2455,18 @@ If you change the profile mid-study, clear or retrain affected checkpoint rows a
 - [ ] No multilingual-only epoch / LR / class-weight shortcuts in the code revision used for the run (`git rev-parse HEAD` on Colab).
 - [ ] Subset and seeds documented: `--subset-sentences`, `--subset-seed`, `--num-seeds`, `--condition-sources`.
 - [ ] Exp04 $\lambda_{bio}$, $\lambda_{type}$ documented (validation grid output or explicit env overrides matching all Exp04 runs in the table).
+- [ ] Exp10 CRF-cascade $\lambda_{bio}$, $\lambda_{type}$ documented (`exp10_lambda_selection.json`, `loss_config` sheets) when the CRF track is reported.
 
 # Part III — OOF router fusion
 
-This document defines the **primary** learned-router evaluation used in the thesis for both corpus sizes:
+This part defines the **primary** learned-router evaluation used in the thesis, for both corpus sizes and both architecture tracks:
 
-| Profile | Sentences | Typical outer-test size (5 folds) | Output folder example |
-|---------|-----------|-------------------------------------|------------------------|
-| **Full labeled set** | ~300 | ~60 sentences / fold | `outputs/cross_comparison_full` |
-| **150-sentence pilot** | 150 | ~30 sentences / fold | `outputs/cross_comparison_150sent` |
+| Profile | Sentences | Typical outer-test size (5 folds) | Tracks × condition sources | Output folder example |
+|---------|-----------|-------------------------------------|----------------------------|------------------------|
+| **Full labeled set (canonical)** | ~300 | ~60 sentences / fold | non-CRF + CRF × `exp07` + `exp07+aug` | `outputs/cross_comparison_full_aug_crf` |
+| **150-sentence pilot** | 150 | ~30 sentences / fold | non-CRF × `exp07` | `outputs/cross_comparison_150sent` |
 
-The **appendix / exploratory** protocol (`06_*_ready`) fits and scores the router on the **same** Exp07 eval tokens (in-sample routing upper bound). Do **not** compare ready-router F1 to Exp01 test F1 in main claims.
+The **appendix / exploratory** protocol (`06_*_ready`, `10_*_ready`) fits and scores the router on the **same** eval tokens (in-sample routing upper bound). Do **not** compare ready-router F1 to Exp01 test F1 in main claims.
 
 ---
 
@@ -2306,16 +2474,17 @@ The **appendix / exploratory** protocol (`06_*_ready`) fits and scores the route
 
 | Role | Runner IDs | Module |
 |------|------------|--------|
-| **Primary (report in abstract / main tables)** | `06_svm_oof`, `06_svm_kernel_oof`, `06_nb_oof`, `06_lr_oof`, `06_rf_oof`, `06_mlp_oof` | `experiment_06_fusion_*_oof.py` → `fusion_router_oof_common.py` |
-| **Appendix only** | `06_svm_ready`, … `06_mlp_ready` | `fusion_router_ready_common.py` |
+| **Primary, non-CRF track** | `06_svm_oof`, `06_svm_kernel_oof`, `06_nb_oof`, `06_lr_oof`, `06_rf_oof`, `06_mlp_oof` | `experiment_06_fusion_*_oof.py` → `fusion_router_oof_common.py` (base pair Exp01 + Exp04) |
+| **Primary, CRF track** | `10_svm_oof`, `10_svm_kernel_oof`, `10_nb_oof`, `10_lr_oof`, `10_rf_oof`, `10_mlp_oof` | `experiment_10_fusion_*_oof.py` → `fusion_router_oof_common.py` (base pair Exp10 regular + Exp10 cascade) |
+| **Appendix only** | `06_svm_ready` … `06_mlp_ready`, `10_svm_ready` … `10_mlp_ready` | `fusion_router_ready_common.py` |
 
-Default cross-comparison experiments (if `--experiments` omitted): `01,04,05_ready,06_ready,06_svm_oof`.
+Default cross-comparison experiments (if `--experiments` omitted): `01,04,05_ready,06_ready,06_svm_oof`. The canonical full run passes all 19 ids explicitly (Part I §1).
 
 ---
 
 ## 2. Nested CV diagram
 
-Corpus = all sentences in the current run (Exp07 **train + eval** JSON merged for that condition). Splits are **sentence-level** (no token leakage).
+Corpus = all sentences of the condition (Exp07 **train + eval** JSON merged; for `exp07+aug` the **original** Exp07 split of the variant, Part I §5.4). Splits are **sentence-level** (no token leakage).
 
 ```text
 [All sentences: N = 150 or ~300]
@@ -2326,13 +2495,13 @@ Corpus = all sentences in the current run (Exp07 **train + eval** JSON merged fo
 
 **Per outer fold:**
 
-1. **Outer test** (~20% of sentences): never used for NER training, inner OOF, or router fit in that fold.
-2. **Inner loop** on outer-train (default **4** folds): train Exp01 + Exp04 on inner-train, predict inner-val → **OOF** predictions for every outer-train sentence.
-3. **Router fit:** same targets and features as §12 in [`theisis overview.md`](theisis%20overview.md), on **OOF** disagreement rows only.
-4. **Final NER:** retrain Exp01 + Exp04 on **all** outer-train sentences; predict outer-test; apply **frozen** router on disagreements; agreement passthrough unchanged.
+1. **Outer test** (~20% of sentences): never used for NER training, inner OOF, router fit or augmentation in that fold.
+2. **Inner loop** on outer-train (default **4** folds): train the track's base pair (Exp01 + Exp04, or Exp10 regular + Exp10 cascade) on inner-train — augmented in-fold on `exp07+aug` — and predict inner-val → **OOF** predictions for every outer-train sentence.
+3. **Router fit:** same targets and features as Part I §12, on **OOF** disagreement rows only.
+4. **Final NER:** retrain the base pair on **all** outer-train sentences (augmented in-fold on `exp07+aug`); predict outer-test; apply the **frozen** router on disagreements; agreement passthrough unchanged.
 5. **Pool** outer-test token predictions across all outer folds → one entity-level F1 over the full corpus (each sentence in exactly one outer test).
 
-Fold assignment: **multilabel iterative stratification** (`multilabel_stratified_kfold_assignments` in `experiments/exp07_split_artifacts.py`) so rare entity types (e.g. pSEC, pSCHP) stay represented in each fold when possible.
+Fold assignment: **multilabel iterative stratification** (`multilabel_stratified_kfold_assignments` in `experiments/exp07_split_artifacts.py`, seed `THESIS_SPLIT_SEED + 1000` outer, `+ 2000 + k` inner) so rare entity types (e.g. pSEC, pSCHP) stay represented in each fold when possible. Because the assignment depends only on corpus order and seed, both tracks and both condition sources of one variant share their folds (Part I §14.1).
 
 ---
 
@@ -2342,18 +2511,20 @@ Fold assignment: **multilabel iterative stratification** (`multilabel_stratified
 |----------|---------|---------|
 | `THESIS_ROUTER_OOF_OUTER_FOLDS` | `5` | Outer CV folds |
 | `THESIS_ROUTER_OOF_INNER_FOLDS` | `4` | Inner OOF folds on outer-train |
-| `THESIS_CROSS_OUTPUT_DIR` | set by `--output-dir` | OOF NER cache: `{output-dir}/oof_router_cache/` |
-| `THESIS_PRESPLIT_TRAIN_JSON` / `THESIS_PRESPLIT_EVAL_JSON` | per condition | Corpus = union of both files |
+| `THESIS_CROSS_OUTPUT_DIR` | set by `--output-dir` | OOF fold cache: `{output-dir}/oof_router_cache/` (Part I §7) |
+| `THESIS_PRESPLIT_TRAIN_JSON` / `THESIS_PRESPLIT_EVAL_JSON` | per condition | Corpus = union of both files (original Exp07 split on `exp07+aug`) |
+| `THESIS_OOF_AUGMENT` / `THESIS_OOF_AUGMENTATION_MODEL` | set by the runner on `exp07+aug` | In-fold augmentation of every training fold; same mask-fill model and `THESIS_EXP08_MULTIPLIER` as the holdout `exp07+aug` files |
 | `{output-dir}/training_seeds.json` | 20 random seeds (persisted) | Stable `THESIS_SPLIT_SEED` across reruns |
-| `THESIS_EXP04_LAMBDA_BIO` / `THESIS_EXP04_LAMBDA_TYPE` | **10** / **5** if unset | Same cascaded loss weights as standalone Exp04; set **before** OOF runs after validation grid (`theisis overview.md` §9.4) |
+| `THESIS_EXP04_LAMBDA_BIO` / `THESIS_EXP04_LAMBDA_TYPE` | **10** / **5** if unset | Exp04 loss weights for every non-CRF fold retrain (grid, Part I §9.4) |
+| `THESIS_EXP10_LAMBDA_BIO` / `THESIS_EXP10_LAMBDA_TYPE` | Exp04 weights if unset | CRF-cascade loss weights for every CRF fold retrain (grid, Part I §12A.7) |
 
 Router features, targets, classifiers, and §11.3 fallback: identical to ready routers (`fusion_ready_sources.py` constants).
-
-Every inner/outer Exp04 retrain in OOF uses the same $\lambda_{bio}$, $\lambda_{type}$ as the main cross-comparison profile (env overrides read in `core/auc_cascaded_pipeline.py`).
 
 ---
 
 ## 4. Example commands
+
+**Full corpus, canonical (six encoders, both tracks, both condition sources, 20 seeds):** Part I §1, or the notebook `colab_full_aug_crf_journal.ipynb`.
 
 **150-sentence pilot (DictaBERT + BEREL, all OOF routers):**
 
@@ -2362,27 +2533,16 @@ python run_cross_data_model_comparison.py \
   --output-dir outputs/cross_comparison_150sent \
   --subset-sentences 150 --subset-seed 42 \
   --models dictabert,berel \
-  --experiments 01,04,05_ready,06_ready,06_svm_oof,06_rf_oof \
+  --experiments 01,04,05_ready,06_ready,06_svm_oof,06_svm_kernel_oof,06_nb_oof,06_lr_oof,06_rf_oof,06_mlp_oof \
   --skip-augmentation --condition-sources exp07 --exp07-source rerun \
   --base-mode auto --num-seeds 20 --resume
 ```
 
-**Full corpus (~300 sentences):**
+**Appendix (in-sample ready routers, fast — reuse the holdout base caches):**
 
 ```bash
 python run_cross_data_model_comparison.py \
-  --output-dir outputs/cross_comparison_full \
-  --models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
-  --experiments 01,04,05_ready,06_ready,06_svm_oof,06_rf_oof \
-  --skip-augmentation --condition-sources exp07 \
-  --base-mode auto --num-seeds 20
-```
-
-**Appendix (in-sample ready routers, fast — reuse Exp01/Exp04 cache):**
-
-```bash
-python run_cross_data_model_comparison.py \
-  --experiments 06_svm_ready,06_rf_ready \
+  --experiments 06_svm_ready,06_rf_ready,10_svm_ready,10_rf_ready \
   --base-mode reuse
 ```
 
@@ -2390,33 +2550,54 @@ python run_cross_data_model_comparison.py \
 
 ## 5. Compute note
 
-Each `(model, condition, seed, 06_*_oof)` run retrains Exp01 + Exp04 many times (inner folds × outer folds + outer finals). Cache under `oof_router_cache/` avoids repeating identical splits. Expect **much** longer wall time than `*_ready`.
+Each `(model, condition, seed)` trains $K_{out}(K_{in}+1) = 25$ base pairs per track; the six routers of a track share them through `oof_router_cache/`, and the augmented fold sets of `exp07+aug` are generated once per (condition, seed) and shared by every encoder and both tracks. For the canonical full run that is 36,000 OOF training pairs (Part I §2) — expect **much** longer wall time than `*_ready`. The runner finishes one encoder (all experiments, conditions and seeds) before starting the next, so the order of `--models` sets priority.
 
 ---
 
 ## 6. Reporting checklist
 
-- Main tables: **`06_*_oof`** F1 only for learned fusion.
+- Main tables: **`06_*_oof`** and **`10_*_oof`** F1 only for learned fusion; never pool the tracks (`track` column).
 - Label column: `protocol = nested_stratified_cv_oof`.
-- Report per-fold metrics sheet (`fold_metrics`) when available.
-- Appendix: `06_*_ready` labeled **in-sample routing upper bound**.
+- Report per-fold metrics sheet (`fold_metrics`) when available; on `exp07+aug` check `synthetic_test_text_overlap` (expected 0).
+- Appendix: `06_*_ready` / `10_*_ready` labeled **in-sample routing upper bound**.
 - **Score baselines inside the same folds.** Build `unified_protocol_table.xlsx` with
-  `build_unified_protocol_table.py` so Exp01/Exp04/Exp05/confidence fusion are scored on the same
-  pooled outer-test tokens as the routers. Never subtract a 70/30 holdout baseline F1 from an OOF
-  fusion F1 — the fold models train on ~80% of the corpus vs. ~70% for the holdout, so the
-  difference conflates protocol with method.
+  `build_unified_protocol_table.py` so each track's base models (and Exp05 repair on the non-CRF
+  track) and confidence fusion are scored on the same pooled outer-test tokens as the routers.
+  Never subtract a 70/30 holdout baseline F1 from an OOF fusion F1 — the fold models train on
+  ~80% of the corpus vs. ~70% for the holdout, so the difference conflates protocol with method.
+- Report the augmentation effect from `paired_condition_tests` and the CRF effect from
+  `paired_track_tests` (identical folds, Holm-adjusted); check `fold_size_mismatches = 0`.
 - Keep holdout results in a **separate** table with its own caption (seed-paired significance and
   the split-strategy comparison), never as extra columns beside OOF numbers.
 
 # Part IV — Journal paper workflow & results
 
-One command runs **(1) Exp04 loss-weight calibration** (resume-aware grid) and **(2) the full cross-comparison** (resume-aware checkpoint). See also [`theisis overview.md`](theisis%20overview.md) §9.4, [`thesis_overview_fusion_oof_cv.md`](thesis_overview_fusion_oof_cv.md).
+One command runs **(1) loss-weight calibration** (Exp04 and, when CRF experiments are selected, the Exp10 CRF cascade; resume-aware grids) and **(2) the full cross-comparison** (resume-aware checkpoint). See also Part I §9.4 and §12A.7, and Part III.
 
 ---
 
 ## 1. Single command (recommended)
 
-**150-sentence pilot:**
+**Full corpus, canonical (~300 sentences, six encoders, both tracks, `exp07` + `exp07+aug`, 20 seeds):**
+
+```bash
+python run_cross_data_model_comparison.py \
+  --journal-paper \
+  --resume \
+  --isolate-splits \
+  --output-dir outputs/cross_comparison_full_aug_crf \
+  --exp07-source auto \
+  --models dictabert,berel,hero,alephbertgimmel,xlm_roberta,mt5 \
+  --experiments 01,04,05_ready,06_ready,06_svm_oof,06_svm_kernel_oof,06_nb_oof,06_lr_oof,06_rf_oof,06_mlp_oof,10_regular,10_cascade,10_fusion_ready,10_svm_oof,10_svm_kernel_oof,10_nb_oof,10_lr_oof,10_rf_oof,10_mlp_oof \
+  --condition-sources exp07,exp07+aug \
+  --num-seeds 20 \
+  --consolidated-error-analysis split \
+  --base-mode auto
+```
+
+On Colab use `colab_full_aug_crf_journal.ipynb`, which runs exactly this command against Google Drive.
+
+**150-sentence pilot (journal defaults):**
 
 ```bash
 python run_cross_data_model_comparison.py \
@@ -2430,7 +2611,7 @@ python run_cross_data_model_comparison.py \
   --base-mode auto
 ```
 
-**Full corpus (~300 sentences):**
+**Full corpus, journal defaults only (reduced: two encoders, no CRF, no augmentation, 3 seeds):**
 
 ```bash
 python run_cross_data_model_comparison.py \
@@ -2444,21 +2625,27 @@ python run_cross_data_model_comparison.py \
 
 ### What `--journal-paper` does
 
+Explicit flags (or their `THESIS_CROSS_*` env equivalents) always win; the journal defaults below fill in only what the caller did not set.
+
 | Step | Behavior | Resume cache |
 |------|----------|--------------|
-| **Loss weights** | Validation grid `{1,5,10}²` → sets `THESIS_EXP04_LAMBDA_BIO/TYPE` | `{output-dir}/exp04_lambda_grid_cache/exp04_lambda_selection.json` + `exp04_lambda_grid_progress.json` (per grid cell) |
-| **Training seeds** | 3 random seeds persisted | `{output-dir}/training_seeds.json` |
-| **Comparison** | `01,04,06_svm_oof,06_rf_oof`, exp07 only, no aug | `{output-dir}/cross_comparison_progress_latest.json` |
-| **Export** | Journal sheets + consolidated error analysis (`all`) | Rebuild export skips re-training if checkpoint complete |
+| **Loss weights (Exp04)** | Validation grid `{1,5,10}²` → sets `THESIS_EXP04_LAMBDA_BIO/TYPE` when Exp04 training is selected (`04`, ready fusion, `06_*_oof`) | `{output-dir}/exp04_lambda_grid_cache/exp04_lambda_selection.json` + `exp04_lambda_grid_progress.json` (per grid cell) |
+| **Loss weights (Exp10)** | Separate grid for the CRF cascade → sets `THESIS_EXP10_LAMBDA_BIO/TYPE` when CRF training is selected (`10_regular`, `10_cascade`, `10_*_ready`, `10_*_oof`) | `{output-dir}/exp10_lambda_grid_cache/exp10_lambda_selection.json` + `exp10_lambda_grid_progress.json` |
+| **Training seeds** | 3 random seeds unless `--num-seeds` / `THESIS_CROSS_NUM_SEEDS` is given (canonical: 20) | `{output-dir}/training_seeds.json` |
+| **Comparison** | Default `01,04,06_svm_oof,06_rf_oof` on `exp07` (no aug) unless `--experiments` / `--condition-sources` are given | `{output-dir}/cross_comparison_progress_latest.json` |
+| **Export** | Journal sheets + consolidated error analysis (`all` unless `--consolidated-error-analysis` is given; canonical: `split`) | Rebuild export skips re-training if checkpoint complete |
 
-`--journal-paper` implies `--resume` unless you pass **`--no-resume`**.
+`--journal-paper` implies `--resume` unless you pass **`--no-resume`**. `--skip-augmentation` is set automatically when the condition sources exclude `exp07+aug`, and combining `--skip-augmentation` with `--condition-sources …exp07+aug` is an error.
 
 ### Manual two-step (optional)
 
 ```bash
-python experiments/experiment_04_loss_weight_grid.py
+python experiments/experiment_04_loss_weight_grid.py            # Exp04 grid
+python experiments/experiment_04_loss_weight_grid.py exp10      # Exp10 CRF-cascade grid
 set THESIS_EXP04_LAMBDA_BIO=...
 set THESIS_EXP04_LAMBDA_TYPE=...
+set THESIS_EXP10_LAMBDA_BIO=...
+set THESIS_EXP10_LAMBDA_TYPE=...
 python run_cross_data_model_comparison.py --calibrate-exp04-loss-weights --resume ...
 ```
 
@@ -2468,11 +2655,13 @@ Prefer **`--journal-paper`** so calibration uses the same `--output-dir` cache.
 
 | Flag | Purpose |
 |------|---------|
-| `--resume` | Skip finished comparison jobs (always use with journal workflow) |
+| `--resume` | Skip finished comparison jobs (always use with journal workflow; pass the same model / experiment / condition lists every time) |
 | `--no-resume` | Force re-run all pending comparison jobs |
-| `--regenerate-exp04-loss-grid` | Ignore cached λ selection; re-run all 9 grid trainings |
+| `--regenerate-exp04-loss-grid` | Ignore cached Exp04 λ selection; re-run all 9 grid trainings |
+| `--regenerate-exp10-loss-grid` | Ignore cached Exp10 CRF-cascade λ selection; re-run its 9 grid trainings |
 | `--regenerate-training-seeds` | New `training_seeds.json` |
-| `--skip-exp04-loss-calibration` | Skip grid; use env or defaults 10/5 |
+| `--skip-exp04-loss-calibration` | Skip both grids; use env or defaults (Exp04 10/5, Exp10 falls back to Exp04) |
+| `--isolate-splits` | Keep Exp07 / Exp07+aug split files under `{output-dir}` instead of the shared `outputs/` folders |
 | `--rebuild-from-checkpoint` | Excel/JSON only, no training |
 
 ---
@@ -2484,9 +2673,9 @@ Prefer **`--journal-paper`** so calibration uses the same `--output-dir` cache.
 | Sheet | Paper use |
 |-------|-----------|
 | **`journal_oof_fold_summary`** | Main OOF fusion F1 (5 folds); covers all 6 primary routers (linear SVM, RBF SVM, Naive Bayes, logistic regression, RF, MLP), not just SVM/RF |
-| **`journal_main_table`** | Exp01/04 **and every OOF fusion method** (`JOURNAL_FOCUS_EXP_IDS` in `experiments/journal_results_export.py`), seeds mean±SD |
-| **`journal_lambda_grid`** | Selected λ from calibration cache |
-| **`journal_loss_config`** | λ recorded per Exp04 run |
+| **`journal_main_table`** | Exp01/04, Exp10 regular/cascade **and every OOF fusion method of both tracks** (`JOURNAL_FOCUS_EXP_IDS` in `experiments/journal_results_export.py`), seeds mean±SD; each fusion row is paired with the baselines of its own track |
+| **`journal_lambda_grid`** | Selected λ from both calibration caches (`cascade_track` = `exp04` / `exp10`) |
+| **`journal_loss_config`** | λ recorded per Exp04 and Exp10 cascade run |
 | **`journal_paper_guide`** | Short index |
 
 > **`journal_paired_fold_deltas` is not emitted** — see the correction in Part V §V.1. Significance
@@ -2500,9 +2689,11 @@ outer-test tokens, plus the `journal_*` sheets above copied in verbatim.
 
 | Sheet | Paper use |
 |-------|-----------|
-| **`fold_summary`** | Main-table cells: mean ± SD F1 over all `(seed, fold)` units, every method |
-| **`fusion_vs_base`** | Headline ΔF1, fusion minus each baseline on identical tokens |
-| **`paired_fold_tests`** | Wilcoxon + t-test p-values, Holm-adjusted per `(model, split_condition)` |
+| **`fold_summary`** | Main-table cells: mean ± SD F1 over all `(seed, fold)` units, every method, per `track` and condition (`augmented` flag) |
+| **`fusion_vs_base`** | Headline ΔF1, fusion minus each baseline of the same track on identical tokens |
+| **`paired_fold_tests`** | Wilcoxon + t-test p-values, Holm-adjusted per `(model, track, split_condition)` |
+| **`paired_condition_tests`** | Augmentation effect: `exp07aug_<variant>` minus `exp07_<variant>` per method on identical outer-test folds, Holm per `(model, track, variant)` |
+| **`paired_track_tests`** | CRF effect: CRF track minus non-CRF track per method family and condition on identical folds, Holm per `(model, split_condition)` |
 | **`unified_main_table`** | Pooled outer-test F1/P/R, one protocol |
 
 Do **not** mix the runner's holdout F1 with OOF F1 in one table: outer folds train on ~80% of the
@@ -2513,12 +2704,12 @@ advantage unrelated to fusion. Keep holdout results in a separate table with its
 
 ## 3. Consolidated error analysis
 
-**File:** `{output-dir}/consolidated_error_analysis_all_*.xlsx`
+**Files:** `{output-dir}/consolidated_error_analysis_all_*.xlsx` (scope `all`), or with `--consolidated-error-analysis split` (canonical full run) one workbook per track: `consolidated_error_analysis_non_exp10_*.xlsx` and `consolidated_error_analysis_exp10_*.xlsx`.
 
 | Sheet | Use |
 |-------|-----|
-| **`summary_non_crf_*`** | Error types, routing, confusions |
-| **`loss_config_summary`** | λ per Exp04 metrics file |
+| **`summary_non_crf_*`** / **`summary_crf_*`** | Error types, routing, confusions per track (overall + per encoder) |
+| **`loss_config_summary`** | λ per Exp04 / Exp10 cascade metrics file |
 | **`oof_fold_summary`** | Fold CV appendix |
 
 ---
@@ -2527,19 +2718,24 @@ advantage unrelated to fusion. Keep holdout results in a separate table with its
 
 | File | Role |
 |------|------|
-| `exp04_lambda_grid_cache/exp04_lambda_selection.json` | Chosen λ for Methods |
-| `exp04_lambda_grid_cache/loss_weight_grid_*.xlsx` | Heatmap figure |
-| `training_seeds.json` | Reproducible 3 seeds |
+| `exp04_lambda_grid_cache/exp04_lambda_selection.json` | Chosen Exp04 λ for Methods |
+| `exp10_lambda_grid_cache/exp10_lambda_selection.json` | Chosen Exp10 CRF-cascade λ for Methods |
+| `exp04_lambda_grid_cache/loss_weight_grid_*.xlsx` (and `exp10_…`) | Heatmap figures |
+| `training_seeds.json` | Reproducible seeds (3 by default, 20 in the canonical run) |
 | `cross_comparison_progress_latest.json` | Resume state |
-| `run_manifest.json` | Hyperparameters + `exp04_lambda_calibration` |
+| `run_manifest.json` | Hyperparameters + `exp04_lambda_calibration` / `exp10_lambda_calibration` (+ isolated split paths with `--isolate-splits`) |
+| `exp07/splits/`, `exp07_augmented/splits_train_vocab/` (with `--isolate-splits`) | Exact split files of the run |
+| `oof_router_cache/` | Fold base workbooks per track (`crf_` prefix for CRF) and in-fold augmented sets (`aug_*`) |
+| `unified_protocol_table.xlsx` | Paper-ready OOF tables and paired tests |
 
 ---
 
-## 5. Exp04 loss weights in code
+## 5. Cascade loss weights in code
 
-- Overrides: `THESIS_EXP04_LAMBDA_BIO`, `THESIS_EXP04_LAMBDA_TYPE` (`core/auc_cascaded_pipeline.py`)
-- Each run: sheet **`loss_config`** in `cascaded_pipeline_results.xlsx`
-- Grid script: `experiments/experiment_04_loss_weight_grid.py` (also invoked via `exp04_loss_calibration.py`)
+- Exp04 overrides: `THESIS_EXP04_LAMBDA_BIO`, `THESIS_EXP04_LAMBDA_TYPE` (`core/auc_cascaded_pipeline.py`)
+- Exp10 overrides: `THESIS_EXP10_LAMBDA_BIO`, `THESIS_EXP10_LAMBDA_TYPE` (`crf_loss_config()` in `core/cascaded_crf_runtime.py`; unset → Exp04 values; $\lambda_{crf}$ fixed at 0.5)
+- Each run: sheet **`loss_config`** in the Exp04 / Exp10 cascade workbook
+- Grid script: `experiments/experiment_04_loss_weight_grid.py [exp04|exp10]` (also invoked via `exp04_loss_calibration.py`)
 
 Implementation: `experiments/journal_results_export.py` builds journal sheets on export.
 
@@ -2614,21 +2810,32 @@ python build_unified_protocol_table.py \
   --output {output-dir}/unified_protocol_table.xlsx
 ```
 
-No retraining: each outer fold already retrained Exp01 + Exp04 and stored both predictions beside
-gold in the router run's `detailed_results` sheet, so this is pure post-processing (seconds, CPU).
+No retraining: each outer fold already retrained the track's base pair (Exp01 + Exp04, or Exp10
+regular + Exp10 cascade) and stored both predictions beside gold in the router run's
+`detailed_results` sheet, so this is pure post-processing (seconds, CPU). Both tracks and both
+condition sources are read in one pass; with `--isolate-splits` point `--splits-dir` at
+`{output-dir}/exp07/splits`.
 
 | Sheet in `unified_protocol_table.xlsx` | What it gives you |
 |----------------------------------------|--------------------|
-| `paired_fold_tests` | Paired **Wilcoxon signed-rank + t-test** p-values for every fusion method vs. Regular NER, Cascade NER, cascade+repair and confidence fusion, paired by `(training_seed, outer_fold)`, **Holm-adjusted** within each `(model, split_condition)` family. |
-| `fold_summary` | Mean ± SD F1 over all `(seed, fold)` units per method — the main-table cells. |
+| `paired_fold_tests` | Paired **Wilcoxon signed-rank + t-test** p-values for every fusion method vs. the baselines of its own track (Regular, Cascade, cascade+repair on the non-CRF track, confidence fusion), paired by `(training_seed, outer_fold)`, **Holm-adjusted** within each `(model, track, split_condition)` family. |
+| `paired_condition_tests` | Augmentation effect per method: `exp07aug_<variant>` minus `exp07_<variant>` on the identical outer-test folds, Holm within `(model, track, variant)`. |
+| `paired_track_tests` | CRF effect per method family: CRF track minus non-CRF track on identical folds, Holm within `(model, split_condition)`. |
+| `fold_summary` | Mean ± SD F1 over all `(seed, fold)` units per method, `track` and condition — the main-table cells. |
 | `fusion_vs_base` | ΔF1 of fusion minus each baseline on identical tokens. |
 | `unified_main_table` | Pooled outer-test F1/P/R per method, one evaluation protocol. |
 | `per_fold_f1` | Raw per-`(seed, fold)` F1 — the paired units behind the tests. |
-| `paired_tests` *(carried over)* | Paired t-test + Wilcoxon across shared seeds (§14) for exp07-vs-exp07+aug and exp08 ablations. |
+| `paired_tests` *(carried over)* | Paired t-test + Wilcoxon across shared seeds (§14) for the holdout exp07-vs-exp07+aug and exp08 ablations. |
+
+The cross-condition and cross-track tables carry `fold_size_mismatches`: the number of paired units
+whose outer-test sentence counts differ between the two sides. It must be 0 — anything else means
+the two runs did not share their folds (e.g. different seeds file or split files) and the row must
+not be reported.
 
 Because pairing is by `(training_seed, outer_fold)`, raising `--num-seeds` directly multiplies
 `n_pairs` (seeds × 5) and therefore statistical power — the same mechanism documented for the
-paired-seed design in §14. **Check `n_pairs` in the output.** At *n*=5 (a single seed) a two-sided
+paired-seed design in §14. **Check `n_pairs` in the output** (canonical full run: 20 × 5 = 100 per
+method, track and condition). At *n*=5 (a single seed) a two-sided
 signed-rank test cannot fall below *p*=0.0625 regardless of effect size; at *n*=100 the floor is
 ≈4 × 10⁻¹⁸ and stops being a constraint.
 

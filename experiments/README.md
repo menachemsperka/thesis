@@ -34,6 +34,10 @@ runners (`run_all_experiments.py`, `run_split_comparison.py`).
 | `experiment_06_fusion_svm_ready.py` | Ready SVM-router fusion from Exp01 + Exp04 — no retraining |
 | `experiment_07_sentence_split_strategy.py` | Compares 8 sentence-split strategies and saves the best splits |
 | `experiment_08_llm_augmentation.py` | LLM mask-filling augmentation for rare labels (see `experiment_08_README.md`) |
+| `fusion_router_oof_common.py` | Nested-CV OOF router fusion for both tracks (non-CRF Exp01 + Exp04, CRF Exp10 regular + cascade); in-fold augmentation when `THESIS_OOF_AUGMENT=1` |
+| `experiment_06_fusion_{svm,svm_kernel,nb,lr,rf,mlp}_oof.py` | Non-CRF OOF routers (`06_*_oof`) |
+| `experiment_10_fusion_{svm,svm_kernel,nb,lr,rf,mlp}_oof.py` | CRF OOF routers (`10_*_oof`) |
+| `exp04_loss_calibration.py` | Resume-aware λ grid calibration for the Exp04 and Exp10 cascades |
 
 Related core module:
 
@@ -55,6 +59,8 @@ python experiments/experiment_04_loss_weight_grid.py
 
 Optional: `THESIS_EXP04_LAMBDA_GRID_VALUES=1,5,10`. Results: `outputs/exp04_lambda_grid/`.  
 Apply the selected pair with `THESIS_EXP04_LAMBDA_BIO` and `THESIS_EXP04_LAMBDA_TYPE` when running Exp04/05.
+
+The Exp10 CRF cascade has its own grid: `python experiments/experiment_04_loss_weight_grid.py exp10` (values `THESIS_EXP10_LAMBDA_GRID_VALUES`, apply with `THESIS_EXP10_LAMBDA_BIO` / `THESIS_EXP10_LAMBDA_TYPE`). `run_cross_data_model_comparison.py --journal-paper` runs both automatically.
 
 ## Experiment 04 in One Paragraph
 

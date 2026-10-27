@@ -39,12 +39,13 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoModel, AutoTokenizer, Trainer, TrainingArguments
+from transformers import AutoTokenizer, Trainer, TrainingArguments
 from transformers.modeling_outputs import TokenClassifierOutput
 
 import pandas as pd
 
 from crf_layer import LinearChainCRF
+from model_backbone import encode_words_for_ner, load_encoder_backbone
 
 
 class BertCRFForTokenClassification(nn.Module):
@@ -58,8 +59,8 @@ class BertCRFForTokenClassification(nn.Module):
 
     def __init__(self, base_model_name: str, num_labels: int, local_files_only: bool = False, o_label_id: int | None = None):
         super().__init__()
-        config = AutoConfig.from_pretrained(base_model_name, local_files_only=local_files_only)
-        self.bert = AutoModel.from_pretrained(base_model_name, config=config, local_files_only=local_files_only)
+        # Encoder-only stack for every registry model (mT5 loads MT5EncoderModel).
+        self.bert = load_encoder_backbone(base_model_name, local_files_only=local_files_only)
         hidden = self.bert.config.hidden_size
         self.dropout = nn.Dropout(0.1)
         self.classifier = nn.Linear(hidden, num_labels)
@@ -122,6 +123,8 @@ def setup_bert_crf_token_classification(
     o_label_id = label_to_id.get("O")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=local_files_only)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token or tokenizer.unk_token
     model = BertCRFForTokenClassification(
         model_name,
         num_labels=len(label_list),
@@ -135,7 +138,7 @@ def setup_bert_crf_token_classification(
             for record in records:
                 words = str(record["text"]).split()
                 labels = [str(label) for label in record["labels"]]
-                encoding = tokenizer(words, is_split_into_words=True, truncation=True)
+                encoding = encode_words_for_ner(tokenizer, words)
                 try:
                     word_ids = encoding.word_ids()
                 except Exception:

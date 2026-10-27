@@ -37,6 +37,8 @@ Ready experiments:
 * ``10_fusion_ready`` — Confidence fusion of Exp10 CRF outputs (``regular_prob`` vs ``cascade_prob``; overview §11.2)
 * ``10_svm_ready`` — linear SVM router on Exp10 CRF outputs (overview §12)
 * ``10_svm_kernel_ready``, ``10_nb_ready``, ``10_lr_ready``, ``10_rf_ready``, ``10_mlp_ready``
+* ``10_svm_oof``, ``10_svm_kernel_oof``, ``10_nb_oof``, ``10_lr_oof``, ``10_rf_oof``, ``10_mlp_oof`` —
+  **primary** ML routers on the CRF track (same nested CV + OOF; overview §12A.6)
 
 Outputs
 -------
@@ -143,6 +145,13 @@ Environment Variables
 ``THESIS_EXP04_EPOCHS``, ``THESIS_EXP04_TRAIN_BATCH``, etc.
     Exp04 cascaded training; see ``core/auc_cascaded_pipeline.py`` and
     ``thesis_overview.md`` Part II.
+``THESIS_EXP10_LAMBDA_BIO``, ``THESIS_EXP10_LAMBDA_TYPE``
+    CRF-cascade (``10_cascade``) loss weights; set from ``{output-dir}/exp10_lambda_grid_cache/``
+    by the CRF validation grid. Unset -> the Exp04 weights are used.
+``THESIS_ISOLATE_SPLITS``
+    ``1`` = same as ``--isolate-splits`` (exp07 / exp07+aug split JSONs under ``--output-dir``).
+``THESIS_OOF_AUGMENT``, ``THESIS_OOF_AUGMENTATION_MODEL``
+    Set by the runner for ``*_oof`` runs on exp07+aug conditions (in-fold augmentation; internal).
 ``THESIS_CSV_ENCODING``
     Force CSV decode (e.g. ``utf-8``, ``cp1255``) when auto-detection is wrong.
 ``THESIS_SKIP_HEBREW_TEXT_VALIDATION``
@@ -196,7 +205,10 @@ MODELS_DIR = PROJECT_ROOT / "models"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 EXP07_SPLITS_DIR = OUTPUTS_DIR / "exp07" / "splits"
 EXP08_SPLITS_DIR = OUTPUTS_DIR / "exp08" / "splits"
-EXP07_AUG_SPLITS_DIR = OUTPUTS_DIR / "exp07_augmented" / "splits"
+# Train-split-only mask-fill vocabulary; legacy full-corpus-vocabulary files stay in "splits".
+EXP07_AUG_SPLITS_SUBDIR = "splits_train_vocab"
+EXP07_AUG_VOCABULARY_SCOPE = "train_split"
+EXP07_AUG_SPLITS_DIR = OUTPUTS_DIR / "exp07_augmented" / EXP07_AUG_SPLITS_SUBDIR
 COMPARISON_DIR = OUTPUTS_DIR / "cross_comparison"
 DEFAULT_BASE_SEED = 42
 TRAINING_SEEDS_FILENAME = "training_seeds.json"
@@ -283,6 +295,12 @@ EXP_NAMES: dict[str, str] = {
     "10_lr_ready": "Logistic Regression Router Fusion CRF (Ready)",
     "10_rf_ready": "Random Forest Router Fusion CRF (Ready)",
     "10_mlp_ready": "MLP Router Fusion CRF (Ready)",
+    "10_svm_oof": "Linear SVM Router Fusion CRF (OOF CV)",
+    "10_svm_kernel_oof": "Kernel SVM Router Fusion CRF (OOF CV)",
+    "10_nb_oof": "Naive Bayes Router Fusion CRF (OOF CV)",
+    "10_lr_oof": "Logistic Regression Router Fusion CRF (OOF CV)",
+    "10_rf_oof": "Random Forest Router Fusion CRF (OOF CV)",
+    "10_mlp_oof": "MLP Router Fusion CRF (OOF CV)",
 }
 
 EXP_SCRIPTS: dict[str, str] = {
@@ -317,6 +335,12 @@ EXP_SCRIPTS: dict[str, str] = {
     "10_lr_ready": "experiment_10_fusion_lr_ready",
     "10_rf_ready": "experiment_10_fusion_rf_ready",
     "10_mlp_ready": "experiment_10_fusion_mlp_ready",
+    "10_svm_oof": "experiment_10_fusion_svm_oof",
+    "10_svm_kernel_oof": "experiment_10_fusion_svm_kernel_oof",
+    "10_nb_oof": "experiment_10_fusion_nb_oof",
+    "10_lr_oof": "experiment_10_fusion_lr_oof",
+    "10_rf_oof": "experiment_10_fusion_rf_oof",
+    "10_mlp_oof": "experiment_10_fusion_mlp_oof",
     "07": "experiment_07_sentence_split_strategy",
     "08": "experiment_08_llm_augmentation",
 }
@@ -369,6 +393,12 @@ OOF_ML_ROUTER_EXP_IDS: set[str] = {
     "06_lr_oof",
     "06_rf_oof",
     "06_mlp_oof",
+    "10_svm_oof",
+    "10_svm_kernel_oof",
+    "10_nb_oof",
+    "10_lr_oof",
+    "10_rf_oof",
+    "10_mlp_oof",
 }
 
 # Experiments that require expensive GPU training (vs cheap inference).
@@ -429,8 +459,9 @@ def _apply_run_layout(
     output_dir: str | Path | None,
     subset_sentences: int | None,
     subset_seed: int,
+    isolate_splits: bool = False,
 ) -> dict[str, Any]:
-    """Point comparison outputs (and optional subset splits) at a dedicated folder."""
+    """Point comparison outputs (and optional subset / isolated splits) at a dedicated folder."""
     global COMPARISON_DIR, EXP07_SPLITS_DIR, EXP07_AUG_SPLITS_DIR
 
     manifest: dict[str, Any] = {"created_at": datetime.now().isoformat(timespec="seconds")}
@@ -473,7 +504,7 @@ def _apply_run_layout(
         )
         os.environ["THESIS_NER_CSV"] = str(subset_csv)
         EXP07_SPLITS_DIR = COMPARISON_DIR / "exp07" / "splits"
-        EXP07_AUG_SPLITS_DIR = COMPARISON_DIR / "exp07_augmented" / "splits"
+        EXP07_AUG_SPLITS_DIR = COMPARISON_DIR / "exp07_augmented" / EXP07_AUG_SPLITS_SUBDIR
         os.environ["THESIS_EXP07_SPLITS_DIR"] = str(EXP07_SPLITS_DIR)
         EXP07_SPLITS_DIR.mkdir(parents=True, exist_ok=True)
         manifest.update(
@@ -489,6 +520,21 @@ def _apply_run_layout(
         _log(
             f"Sentence subset: {used_sentences} sentences ({used_rows} token rows) -> {subset_csv}"
         )
+    elif isolate_splits:
+        if not output_dir:
+            raise ValueError("--isolate-splits requires --output-dir.")
+        EXP07_SPLITS_DIR = COMPARISON_DIR / "exp07" / "splits"
+        EXP07_AUG_SPLITS_DIR = COMPARISON_DIR / "exp07_augmented" / EXP07_AUG_SPLITS_SUBDIR
+        os.environ["THESIS_EXP07_SPLITS_DIR"] = str(EXP07_SPLITS_DIR)
+        EXP07_SPLITS_DIR.mkdir(parents=True, exist_ok=True)
+        manifest.update(
+            {
+                "isolate_splits": True,
+                "exp07_splits_dir": str(EXP07_SPLITS_DIR),
+                "exp07_aug_splits_dir": str(EXP07_AUG_SPLITS_DIR),
+            }
+        )
+        _log(f"Isolated split artifacts under {COMPARISON_DIR}")
 
     manifest_path = COMPARISON_DIR / "run_manifest.json"
     try:
@@ -1388,6 +1434,12 @@ def _consolidate_exp10_error_analysis(rows: list[dict[str, Any]], ts: str) -> Pa
         "exp10_lr_ready",
         "exp10_rf_ready",
         "exp10_mlp_ready",
+        "exp10_svm_oof",
+        "exp10_svm_kernel_oof",
+        "exp10_nb_oof",
+        "exp10_lr_oof",
+        "exp10_rf_oof",
+        "exp10_mlp_oof",
     )
     return _consolidate_error_analysis_workbooks(
         rows,
@@ -1662,6 +1714,8 @@ def _exp07_augmented_ready() -> tuple[bool, str]:
     variants = meta.get("variants")
     if not isinstance(variants, list) or not variants:
         return False, "No variants in split_meta.json"
+    if meta.get("vocabulary_scope") != EXP07_AUG_VOCABULARY_SCOPE:
+        return False, "split_meta.json predates train-split-only augmentation vocabulary"
 
     seeds_raw = (os.environ.get("THESIS_EXP07_NUM_SEEDS") or os.environ.get("THESIS_DIRECT_SPLIT_RUNS") or "20").strip()
     try:
@@ -1692,9 +1746,10 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
 
     For every exp07 split variant, loads its training sentences, runs the
     LLM mask-filling augmentation from experiment_08, and saves the
-    augmented training set alongside the original eval set.
+    augmented training set alongside the original eval set. Replacement entity
+    tokens are drawn from that variant's training sentences only.
 
-    Results are cached in ``outputs/exp07_augmented/splits/``.
+    Results are cached in ``outputs/exp07_augmented/splits_train_vocab/``.
     """
     ready, _ = _exp07_augmented_ready()
     if not force_rerun and ready:
@@ -1722,14 +1777,9 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
     augment_fn = exp08_mod._augment_training_data
     resolve_aug_model_fn = getattr(exp08_mod, "_resolve_augmentation_model_name", None)
 
-    # We need the full DataFrame for entity-token lookup during augmentation
     from split_io import load_split, save_split
-    from common import resolve_dataset, configure_model_environment, suppress_output_if_needed
-    from NERtraining import PrepDataSetNERTraining
+    from common import configure_model_environment, suppress_output_if_needed
 
-    dataset_path = resolve_dataset("ner_dataset.csv")
-    worker = PrepDataSetNERTraining()
-    data_df = worker.load_and_prepare_data(str(dataset_path))
     model_name, _ = configure_model_environment()
     augmentation_model_name = (
         resolve_aug_model_fn(model_name) if callable(resolve_aug_model_fn) else model_name
@@ -1776,6 +1826,7 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
         )
         train_sentences = load_split(train_path)
         eval_sentences = load_split(eval_path)
+        train_vocab_df = exp08_mod.sentences_to_token_df(train_sentences)
         seed_files: dict[str, dict[str, Any]] = {}
         first_seed_train_file = ""
         first_seed_eval_file = ""
@@ -1816,7 +1867,7 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
             with suppress_output_if_needed():
                 generated_sents, _ = augment_fn(
                     train_sentences,
-                    data_df,
+                    train_vocab_df,
                     model_name,
                     multiplier=multiplier,
                     rng_seed=int(seed),
@@ -1860,6 +1911,7 @@ def _prepare_exp07_augmented_splits(force_rerun: bool = False) -> dict[str, Any]
     meta = {
         "description": "Exp07 split variants with exp08-style LLM augmentation applied to training data",
         "augmentation_multiplier": multiplier,
+        "vocabulary_scope": EXP07_AUG_VOCABULARY_SCOPE,
         "num_seeds": len(seed_list),
         "seed_list": seed_list,
         "augmentation_model": augmentation_model_name,
@@ -1906,6 +1958,7 @@ def _build_conditions(
     # ── Exp07 variants ────────────────────────────────────────────────
     meta07 = _load_exp07_meta()
     baseline_variant = meta07.get("baseline_variant", "")
+    exp07_paths: dict[str, tuple[Path, Path]] = {}
     for vm in meta07.get("variants", []):
         train_path = EXP07_SPLITS_DIR / vm["train_file"]
         eval_path = EXP07_SPLITS_DIR / vm["eval_file"]
@@ -1913,6 +1966,7 @@ def _build_conditions(
         if not train_path.exists() or not eval_path.exists():
             _log(f"WARNING: skipping exp07 variant {vm['variant']} (missing files)")
             continue
+        exp07_paths[vm["variant"]] = (train_path, eval_path)
         conditions.append({
             "source": "exp07",
             "key": cond_key,
@@ -1989,6 +2043,7 @@ def _build_conditions(
                 if not train_path.exists() or not eval_path.exists():
                     _log(f"WARNING: skipping exp07+aug variant {vm['variant']} (missing files)")
                     continue
+                original_paths = exp07_paths.get(vm["variant"])
                 conditions.append({
                     "source": "exp07+aug",
                     "key": cond_key,
@@ -1998,6 +2053,9 @@ def _build_conditions(
                     "description": vm.get("description", f"{vm['label']} + augmentation"),
                     "train_path": train_path,
                     "eval_path": eval_path,
+                    # OOF routers re-split these original sentences and augment inside each fold.
+                    "original_train_path": original_paths[0] if original_paths else None,
+                    "original_eval_path": original_paths[1] if original_paths else None,
                     "seed_files": seed_files,
                     "is_baseline": False,
                 })
@@ -2360,6 +2418,8 @@ def run_comparison(
     regenerate_training_seeds: bool = False,
     calibrate_exp04_loss_weights: bool = False,
     regenerate_exp04_loss_grid: bool = False,
+    regenerate_exp10_loss_grid: bool = False,
+    isolate_splits: bool = False,
 ) -> dict:
     """Run all (model × data-condition × experiment) combinations.
 
@@ -2407,6 +2467,7 @@ def run_comparison(
         output_dir=output_dir,
         subset_sentences=subset_sentences,
         subset_seed=subset_seed,
+        isolate_splits=isolate_splits,
     )
     _log(
         "Fair training defaults: "
@@ -2476,37 +2537,50 @@ def run_comparison(
 
     COMPARISON_DIR.mkdir(parents=True, exist_ok=True)
 
-    needs_exp04_lambda = (
-        "04" in experiment_ids or any(e in OOF_ML_ROUTER_EXP_IDS for e in experiment_ids)
+    # Ready experiments train their missing base pair through the same caches, so they need the weights too.
+    needs_exp04_lambda = any(
+        e == "04"
+        or e in READY_DEPENDENT_EXP_IDS
+        or (e in OOF_ML_ROUTER_EXP_IDS and e.startswith("06_"))
+        for e in experiment_ids
     )
-    if (
-        calibrate_exp04_loss_weights
-        and needs_exp04_lambda
-        and not rebuild_from_checkpoint
-    ):
+    needs_exp10_lambda = any(
+        e in {"10_regular", "10_cascade"}
+        or e in EXP10_READY_DEPENDENT_EXP_IDS
+        or (e in OOF_ML_ROUTER_EXP_IDS and e.startswith("10_"))
+        for e in experiment_ids
+    )
+    calibration_jobs = [
+        ("exp04", "Exp04", needs_exp04_lambda, regenerate_exp04_loss_grid),
+        ("exp10", "Exp10 CRF cascade", needs_exp10_lambda, regenerate_exp10_loss_grid),
+    ]
+    for track, label, needed, force_rebuild in calibration_jobs:
+        if not (calibrate_exp04_loss_weights and needed and not rebuild_from_checkpoint):
+            continue
         os.environ.setdefault("THESIS_SPLIT_SEED", str(seeds[0] if seeds else DEFAULT_BASE_SEED))
         print(f"\n{'-'*60}")
-        print("  [PREP] Exp04 validation loss-weight grid (resume-aware)")
+        print(f"  [PREP] {label} validation loss-weight grid (resume-aware)")
         print(f"{'-'*60}")
         try:
-            from exp04_loss_calibration import ensure_exp04_loss_weights_calibrated
+            from exp04_loss_calibration import ensure_loss_weights_calibrated
 
-            cal = ensure_exp04_loss_weights_calibrated(
+            cal = ensure_loss_weights_calibrated(
                 COMPARISON_DIR,
+                track=track,
                 resume=resume,
-                force_rebuild=regenerate_exp04_loss_grid,
+                force_rebuild=force_rebuild,
                 log_fn=_log,
             )
             manifest_path = COMPARISON_DIR / "run_manifest.json"
             manifest: dict[str, Any] = {}
             if manifest_path.exists():
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["exp04_lambda_calibration"] = cal
+            manifest[f"{track}_lambda_calibration"] = cal
             manifest_path.write_text(
                 json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
             )
         except Exception as exc:
-            raise RuntimeError(f"Exp04 loss-weight calibration failed: {exc}") from exc
+            raise RuntimeError(f"{label} loss-weight calibration failed: {exc}") from exc
 
     base_index_path = COMPARISON_DIR / "cross_comparison_base_ready_index.json"
     base_index = _load_base_index(base_index_path)
@@ -2864,7 +2938,19 @@ def run_comparison(
                                 metrics["status"] = "ok_reused_base"
 
                         elif exp_id in OOF_ML_ROUTER_EXP_IDS:
-                            _set_presplit_env(cond["train_path"], cond["eval_path"])
+                            if cond.get("source") == "exp07+aug":
+                                if not cond.get("original_train_path") or not cond.get("original_eval_path"):
+                                    raise RuntimeError(
+                                        f"No original exp07 split recorded for {cond['key']}; "
+                                        "in-fold OOF augmentation needs the un-augmented sentences."
+                                    )
+                                # Same CV corpus (and folds) as the matching exp07 condition; only training folds are augmented.
+                                _set_presplit_env(cond["original_train_path"], cond["original_eval_path"])
+                                os.environ["THESIS_OOF_AUGMENT"] = "1"
+                                if resolved_aug_model:
+                                    os.environ["THESIS_OOF_AUGMENTATION_MODEL"] = resolved_aug_model
+                            else:
+                                _set_presplit_env(cond["train_path"], cond["eval_path"])
                             try:
                                 mod = _import_experiment(exp_id)
                                 payload = mod.run()
@@ -2872,6 +2958,8 @@ def run_comparison(
                                 metrics["status"] = metrics.get("status") or "ok_oof_cv"
                             finally:
                                 _clear_presplit_env()
+                                os.environ.pop("THESIS_OOF_AUGMENT", None)
+                                os.environ.pop("THESIS_OOF_AUGMENTATION_MODEL", None)
 
                         elif exp_id in EXP10_READY_DEPENDENT_EXP_IDS:
                             base_entry, reused_base_artifacts = _ensure_base_artifacts_crf(
@@ -3647,9 +3735,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--experiments",
-        default=(os.environ.get("THESIS_CROSS_EXPERIMENTS") or "01,04,05_ready,06_ready,06_svm_oof").strip(),
+        default=None,
         help=(
-            "Comma-separated experiment IDs (default: 01,04,05_ready,06_ready,06_svm_oof)."
+            "Comma-separated experiment IDs (default: THESIS_CROSS_EXPERIMENTS or "
+            "01,04,05_ready,06_ready,06_svm_oof). An explicit value is kept under --journal-paper."
         ),
     )
     parser.add_argument(
@@ -3731,25 +3820,37 @@ if __name__ == "__main__":
         "--journal-paper",
         action="store_true",
         help=(
-            "One-shot IEEE journal profile: calibrate Exp04 loss weights (resume-aware), "
-            "then run comparison with --resume. Sets defaults: 3 seeds, exp07 only, "
-            "01+04+06_svm_oof+06_rf_oof, skip augmentation, consolidated error analysis all."
+            "One-shot IEEE journal profile: calibrate cascade loss weights (Exp04 grid, plus the "
+            "Exp10 CRF grid when CRF experiments are selected; resume-aware), then run comparison "
+            "with --resume. Defaults (each replaced by an explicitly passed flag): 3 seeds, exp07 "
+            "only, 01+04+06_svm_oof+06_rf_oof, consolidated error analysis all."
         ),
     )
     parser.add_argument(
         "--calibrate-exp04-loss-weights",
         action="store_true",
-        help="Before comparison, run/resume validation grid for THESIS_EXP04_LAMBDA_BIO/TYPE.",
+        help=(
+            "Before comparison, run/resume the validation grid for THESIS_EXP04_LAMBDA_BIO/TYPE "
+            "and, when CRF experiments are selected, THESIS_EXP10_LAMBDA_BIO/TYPE."
+        ),
     )
     parser.add_argument(
         "--skip-exp04-loss-calibration",
         action="store_true",
-        help="Do not run loss-weight grid (use existing env vars or pipeline defaults 10/5).",
+        help=(
+            "Do not run either loss-weight grid (use existing env vars or pipeline defaults 10/5; "
+            "the CRF cascade falls back to the Exp04 weights)."
+        ),
     )
     parser.add_argument(
         "--regenerate-exp04-loss-grid",
         action="store_true",
-        help="Ignore cached lambda selection and re-run the full validation grid.",
+        help="Ignore cached Exp04 lambda selection and re-run the full Exp04 validation grid.",
+    )
+    parser.add_argument(
+        "--regenerate-exp10-loss-grid",
+        action="store_true",
+        help="Ignore cached Exp10 CRF lambda selection and re-run the full CRF-cascade validation grid.",
     )
     parser.add_argument(
         "--rerun-experiments",
@@ -3775,10 +3876,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--condition-sources",
-        default=(os.environ.get("THESIS_CROSS_CONDITION_SOURCES") or "exp07,exp07+aug").strip(),
+        default=None,
         help=(
-            "Comma-separated condition sources to include "
-            "(default: exp07,exp07+aug). Allowed: exp07, exp08, exp07+aug."
+            "Comma-separated condition sources to include (default: THESIS_CROSS_CONDITION_SOURCES "
+            "or exp07,exp07+aug). Allowed: exp07, exp08, exp07+aug. An explicit value is kept "
+            "under --journal-paper."
         ),
     )
     parser.add_argument(
@@ -3805,9 +3907,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--consolidated-error-analysis",
         choices=["split", "both", "exp10", "rest", "all"],
-        default="split",
+        default=None,
         help=(
-            "Consolidated error-analysis workbooks: "
+            "Consolidated error-analysis workbooks (default: split; all under --journal-paper "
+            "unless passed explicitly): "
             "split/both = exp10 file + non-Exp10 file (recommended; lower RAM than 'all'); "
             "exp10 or rest = one file only; "
             "all = single workbook for every run (highest RAM)."
@@ -3844,6 +3947,16 @@ if __name__ == "__main__":
         default=int((os.environ.get("THESIS_SUBSET_SEED") or "42").strip() or "42"),
         help="Random seed for --subset-sentences sampling (default: 42).",
     )
+    parser.add_argument(
+        "--isolate-splits",
+        action="store_true",
+        default=(os.environ.get("THESIS_ISOLATE_SPLITS") or "").strip().lower() in {"1", "true", "yes", "on"},
+        help=(
+            "Keep exp07 and exp07+aug split JSONs under --output-dir (exp07/splits, "
+            "exp07_augmented/splits_train_vocab) instead of <repo>/outputs, e.g. on a Colab Drive "
+            "folder. Implied by --subset-sentences."
+        ),
+    )
     args = parser.parse_args()
 
     if args.list_base_cache:
@@ -3858,21 +3971,45 @@ if __name__ == "__main__":
     if args.num_seeds is None:
         args.num_seeds = int((os.environ.get("THESIS_CROSS_NUM_SEEDS") or "20").strip() or "20")
 
+    # Same explicit-vs-default distinction for the flags --journal-paper would otherwise replace.
+    env_experiments = (os.environ.get("THESIS_CROSS_EXPERIMENTS") or "").strip()
+    env_condition_sources = (os.environ.get("THESIS_CROSS_CONDITION_SOURCES") or "").strip()
+    experiments_explicit = args.experiments is not None or bool(env_experiments)
+    condition_sources_cli = args.condition_sources is not None
+    condition_sources_explicit = condition_sources_cli or bool(env_condition_sources)
+    consolidated_explicit = args.consolidated_error_analysis is not None
+    if args.experiments is None:
+        args.experiments = env_experiments or "01,04,05_ready,06_ready,06_svm_oof"
+    if args.condition_sources is None:
+        args.condition_sources = env_condition_sources or "exp07,exp07+aug"
+    if args.consolidated_error_analysis is None:
+        args.consolidated_error_analysis = "split"
+
     journal_default_experiments = "01,04,06_svm_oof,06_rf_oof"
 
     if args.journal_paper:
-        if not (os.environ.get("THESIS_CROSS_EXPERIMENTS") or "").strip():
+        if not experiments_explicit:
             args.experiments = journal_default_experiments
         # Journal default is 3 seeds, but only when the caller never explicitly
         # requested a seed count via --num-seeds or THESIS_CROSS_NUM_SEEDS.
         if not num_seeds_explicit and not (os.environ.get("THESIS_CROSS_NUM_SEEDS") or "").strip():
             args.num_seeds = 3
-        args.skip_augmentation = True
-        args.condition_sources = "exp07"
-        args.consolidated_error_analysis = "all"
+        if not condition_sources_explicit:
+            args.condition_sources = "exp07"
+        if "exp07+aug" not in [s.strip().lower() for s in args.condition_sources.split(",")]:
+            args.skip_augmentation = True
+        if not consolidated_explicit:
+            args.consolidated_error_analysis = "all"
         args.calibrate_exp04_loss_weights = True
         if not args.no_resume:
             args.resume = True
+
+    if (
+        args.skip_augmentation
+        and condition_sources_cli
+        and "exp07+aug" in [s.strip().lower() for s in args.condition_sources.split(",")]
+    ):
+        parser.error("--skip-augmentation contradicts --condition-sources containing exp07+aug.")
 
     experiment_ids = [x.strip() for x in args.experiments.split(",") if x.strip()]
     model_keys = [x.strip() for x in args.models.split(",") if x.strip()]
@@ -3920,6 +4057,8 @@ if __name__ == "__main__":
             regenerate_training_seeds=bool(args.regenerate_training_seeds),
             calibrate_exp04_loss_weights=calibrate_loss,
             regenerate_exp04_loss_grid=bool(args.regenerate_exp04_loss_grid),
+            regenerate_exp10_loss_grid=bool(args.regenerate_exp10_loss_grid),
+            isolate_splits=bool(args.isolate_splits),
         )
     except KeyboardInterrupt:
         raise SystemExit(130)

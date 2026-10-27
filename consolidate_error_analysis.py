@@ -23,7 +23,9 @@ Confidence Fusion (exp06_ready), Linear SVM Fusion (exp06_svm_oof primary; exp06
 appendix), RBF SVM Fusion (exp06_svm_kernel_oof / exp06_svm_kernel_ready), Naive Bayes Fusion
 (exp06_nb_oof / exp06_nb_ready), Logistic Regression Fusion (exp06_lr_oof / exp06_lr_ready),
 RF Fusion (exp06_rf_oof / exp06_rf_ready). MLP Fusion (exp06_mlp_oof / exp06_mlp_ready) is also
-recognized if that experiment is run. Designed for 1–3 training seeds + 5-fold OOF router CV.
+recognized if that experiment is run. The CRF track maps onto the same columns (exp10_regular,
+exp10_cascade, exp10_fusion_ready, exp10_*_oof primary, exp10_*_ready appendix) in the
+summary_crf_* tabs. Designed for any number of training seeds + 5-fold OOF router CV.
 Other experiment IDs are omitted from summary tabs.
 """
 from __future__ import annotations
@@ -70,6 +72,8 @@ CANONICAL_MODEL_SHEETS: tuple[tuple[str, str], ...] = (
     ("berel", "BEREL 3.0"),
     ("hero", "HeRo"),
     ("alephbertgimmel", "AlephBERT-Gimmel"),
+    ("xlm_roberta", "XLM-RoBERTa-base"),
+    ("mt5", "mT5-base"),
 )
 
 ROUTER_ROUTES = (
@@ -104,6 +108,12 @@ FOCUS_THESIS_ERROR_ANALYSIS_EXP_IDS = frozenset({
     "exp10_lr_ready",
     "exp10_rf_ready",
     "exp10_mlp_ready",
+    "exp10_svm_oof",
+    "exp10_svm_kernel_oof",
+    "exp10_nb_oof",
+    "exp10_lr_oof",
+    "exp10_rf_oof",
+    "exp10_mlp_oof",
 })
 
 # exp01 / exp10_regular write a *sentence*-level "detailed_results" sheet
@@ -122,12 +132,14 @@ def _in_thesis_error_analysis_focus(experiment_id: str) -> bool:
 # that should be pooled into that column. Add new rows here as new routers are run.
 _FUSION_METHOD_EXP_IDS: dict[str, tuple[str, ...]] = {
     "Confidence Fusion": ("exp06_ready", "exp10_fusion_ready"),
-    "Linear SVM Fusion": ("exp06_svm_oof", "exp06_svm_ready", "exp10_svm_ready"),
-    "RBF SVM Fusion": ("exp06_svm_kernel_oof", "exp06_svm_kernel_ready", "exp10_svm_kernel_ready"),
-    "Naive Bayes Fusion": ("exp06_nb_oof", "exp06_nb_ready", "exp10_nb_ready"),
-    "Logistic Regression Fusion": ("exp06_lr_oof", "exp06_lr_ready", "exp10_lr_ready"),
-    "RF Fusion": ("exp06_rf_oof", "exp06_rf_ready", "exp10_rf_ready"),
-    "MLP Fusion": ("exp06_mlp_oof", "exp06_mlp_ready", "exp10_mlp_ready"),
+    "Linear SVM Fusion": ("exp06_svm_oof", "exp06_svm_ready", "exp10_svm_oof", "exp10_svm_ready"),
+    "RBF SVM Fusion": (
+        "exp06_svm_kernel_oof", "exp06_svm_kernel_ready", "exp10_svm_kernel_oof", "exp10_svm_kernel_ready",
+    ),
+    "Naive Bayes Fusion": ("exp06_nb_oof", "exp06_nb_ready", "exp10_nb_oof", "exp10_nb_ready"),
+    "Logistic Regression Fusion": ("exp06_lr_oof", "exp06_lr_ready", "exp10_lr_oof", "exp10_lr_ready"),
+    "RF Fusion": ("exp06_rf_oof", "exp06_rf_ready", "exp10_rf_oof", "exp10_rf_ready"),
+    "MLP Fusion": ("exp06_mlp_oof", "exp06_mlp_ready", "exp10_mlp_oof", "exp10_mlp_ready"),
 }
 
 # Router label used in the routing-decision sections (confidence fusion has no

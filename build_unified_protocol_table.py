@@ -2,13 +2,14 @@
 build_unified_protocol_table.py — Re-score every method on the SAME nested-CV
 outer-test tokens, so fusion is comparable to the base models under one protocol.
 
-No retraining is required. The ``detailed_results`` sheet of each ``06_*_oof``
-result file already holds, for every pooled outer-test token: the gold label, the
-Exp01 (direct NER) label, the Exp04 (cascade) label, both confidences, the
-cascade BIO/type parts, and the router's fused label. This script recomputes
-strict entity-level F1 for each method over those identical tokens and writes one
-workbook containing the unified main table, fusion-vs-base paired deltas,
-per-fold F1 and paired fold tests.
+No retraining is required. The ``detailed_results`` sheet of each ``06_*_oof`` (non-CRF
+track: Exp01 + Exp04 bases) and ``10_*_oof`` (CRF track: Exp10 regular + Exp10 cascade
+bases) result file already holds, for every pooled outer-test token: the gold label, the
+regular and cascade labels, both confidences, the cascade BIO/type parts, and the
+router's fused label. This script recomputes strict entity-level F1 for each method over
+those identical tokens and writes one workbook containing the unified main table,
+fusion-vs-base paired deltas, per-fold F1 and paired fold tests. When both are present it
+also tests exp07+aug against exp07 and CRF against non-CRF on the same folds.
 
 Usage (from the repo root, e.g. on Colab):
 
@@ -54,8 +55,6 @@ REQUIRED_COLUMNS = {
     "fused_pred_label",
 }
 
-# (sheet label, prediction column) in reporting order. The router row is appended
-# per file because its label depends on which classifier produced the file.
 # Sheets copied verbatim from the runner's cross_comparison_latest.xlsx so that the
 # unified workbook is self-contained and nothing else has to be opened to write the paper.
 REFERENCE_SHEETS: tuple[str, ...] = (
@@ -68,12 +67,34 @@ REFERENCE_SHEETS: tuple[str, ...] = (
     "paired_tests",
 )
 
-BASE_METHODS: tuple[tuple[str, str], ...] = (
-    ("Direct NER (Exp01)", "regular_pred_label"),
-    ("Three-step cascade (Exp04)", "cascade_pred_label"),
-    ("Cascade + repair (Exp05)", "repaired_cascade_pred_label"),
-    ("Confidence fusion (Exp06)", "conf_fusion_pred_label"),
-)
+# (sheet label, prediction column) per base track, in reporting order. The router row is
+# appended per file because its label depends on which classifier produced the file.
+BASE_METHODS_BY_TRACK: dict[str, tuple[tuple[str, str], ...]] = {
+    "non_crf": (
+        ("Direct NER (Exp01)", "regular_pred_label"),
+        ("Three-step cascade (Exp04)", "cascade_pred_label"),
+        ("Cascade + repair (Exp05)", "repaired_cascade_pred_label"),
+        ("Confidence fusion (Exp06)", "conf_fusion_pred_label"),
+    ),
+    # Exp10 cascade already applies the Exp05 B/I type repair after Viterbi decoding.
+    "crf": (
+        ("Direct NER-CRF (Exp10 regular)", "regular_pred_label"),
+        ("Cascade-CRF (Exp10 cascade)", "cascade_pred_label"),
+        ("Confidence fusion CRF (Exp10)", "conf_fusion_pred_label"),
+    ),
+}
+ROUTER_LABEL_SUFFIX: dict[str, str] = {"non_crf": "(Exp06 OOF)", "crf": "(Exp10 OOF)"}
+
+# Track-independent method names, used to pair CRF rows with their non-CRF counterparts.
+METHOD_FAMILY_BY_COLUMN: dict[str, str] = {
+    "regular_pred_label": "Direct NER",
+    "cascade_pred_label": "Cascade",
+    "repaired_cascade_pred_label": "Cascade + repair",
+    "conf_fusion_pred_label": "Confidence fusion",
+}
+
+AUG_CONDITION_PREFIX = "exp07aug_"
+PLAIN_CONDITION_PREFIX = "exp07_"
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +327,12 @@ def read_oof_file(path: Path) -> dict | None:
         print(f"  ! protocol is '{protocol}', not nested CV, skipped: {path.name}")
         return None
 
+    track = str(meta.get("track") or "").strip()
+    if track not in BASE_METHODS_BY_TRACK:
+        # Files written before the CRF track existed carry no track column.
+        track = "crf" if "_crf_" in path.name else "non_crf"
+    meta["track"] = track
+
     return {
         "path": path,
         "meta": meta,
@@ -317,6 +344,7 @@ def read_oof_file(path: Path) -> dict | None:
 def _run_key(meta: dict, path: Path) -> tuple:
     return (
         str(meta.get("model", "unknown")),
+        str(meta.get("track", "non_crf")),
         str(meta.get("split_condition", "unknown")),
         str(meta.get("seed", "unknown")),
         str(meta.get("router", path.stem)),
@@ -324,7 +352,7 @@ def _run_key(meta: dict, path: Path) -> tuple:
 
 
 def dedupe_runs(runs: list[dict]) -> list[dict]:
-    """Keep the newest file per (model, condition, seed, router)."""
+    """Keep the newest file per (model, track, condition, seed, router)."""
     best: dict[tuple, dict] = {}
     for run in runs:
         key = _run_key(run["meta"], run["path"])
@@ -453,10 +481,10 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
     error_rows: list[dict] = []
     fold_map_cache: dict[tuple, dict[int, int] | None] = {}
     classify = _load_error_classifier()
-    # The four base methods are byte-identical across the five router workbooks of one
-    # (model, condition, seed) because every router reuses the same cached Exp01/Exp04
-    # predictions. Count them once so the sheet is not 5x inflated.
-    base_errors_done: set[tuple[str, str, str]] = set()
+    # The base methods are byte-identical across the router workbooks of one
+    # (model, track, condition, seed) because every router reuses the same cached base-model
+    # predictions. Count them once so the sheet is not inflated once per router.
+    base_errors_done: set[tuple[str, str, str, str]] = set()
 
     for run_idx, run in enumerate(runs, start=1):
         meta = run["meta"]
@@ -466,14 +494,21 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
         detailed = add_derived_predictions(run["detailed"])
 
         model = str(meta.get("model", "unknown"))
+        track = str(meta.get("track", "non_crf"))
         condition = str(meta.get("split_condition", "unknown"))
+        augmented = base_condition(condition).startswith(AUG_CONDITION_PREFIX)
         seed = str(meta.get("seed", "unknown"))
         router = str(meta.get("router", path.stem))
         outer_folds = int(meta.get("outer_folds", 5) or 5)
         inner_folds = int(meta.get("inner_folds", 4) or 4)
 
-        router_label = f"{router} fusion (Exp06 OOF)"
-        methods = list(BASE_METHODS) + [(router_label, "fused_pred_label")]
+        base_methods = BASE_METHODS_BY_TRACK[track]
+        router_label = f"{router} fusion {ROUTER_LABEL_SUFFIX[track]}"
+        methods = list(base_methods) + [(router_label, "fused_pred_label")]
+        families = {
+            label: METHOD_FAMILY_BY_COLUMN.get(pred_col, f"{router} router")
+            for label, pred_col in methods
+        }
 
         n_sentences = int(detailed["sentence_id"].nunique())
         n_tokens = int(len(detailed))
@@ -484,10 +519,13 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
             scores[label] = f1
             main_rows.append({
                 "model": model,
+                "track": track,
                 "split_condition": condition,
+                "augmented": augmented,
                 "seed": seed,
                 "router": router,
                 "method": label,
+                "method_family": families[label],
                 "is_fusion_router": pred_col == "fused_pred_label",
                 "f1": f1,
                 "precision": precision,
@@ -501,10 +539,12 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
             })
 
         fused_f1 = scores[router_label]
-        for label, _ in BASE_METHODS:
+        for label, _ in base_methods:
             delta_rows.append({
                 "model": model,
+                "track": track,
                 "split_condition": condition,
+                "augmented": augmented,
                 "seed": seed,
                 "router": router,
                 "baseline_method": label,
@@ -518,6 +558,7 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
         disagree_tokens = int(detailed["disagree"].sum())
         diag_rows.append({
             "model": model,
+            "track": track,
             "split_condition": condition,
             "seed": seed,
             "router": router,
@@ -529,7 +570,7 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
         })
 
         if classify is not None:
-            base_key = (model, condition, seed)
+            base_key = (model, track, condition, seed)
             first_run_for_base = base_key not in base_errors_done
             base_errors_done.add(base_key)
             entity_tokens = int((detailed["true_label"].astype(str) != "O").sum())
@@ -541,8 +582,10 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
                 errors_total = n_tokens - counts["correct"]
                 error_rows.append({
                     "model": model,
+                    "track": track,
                     "split_condition": condition,
                     "base_split_condition": base_condition(condition),
+                    "augmented": augmented,
                     "seed": seed,
                     "router": router if is_router else "(shared by all routers)",
                     "method": label,
@@ -575,12 +618,15 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
                     f1, precision, recall = _score(chunk, pred_col)
                     fold_rows.append({
                         "model": model,
+                        "track": track,
                         "split_condition": condition,
                         "base_split_condition": base_condition(condition),
+                        "augmented": augmented,
                         "seed": seed,
                         "router": router,
                         "outer_fold": int(fold),
                         "method": label,
+                        "method_family": families[label],
                         "f1": f1,
                         "precision": precision,
                         "recall": recall,
@@ -596,6 +642,8 @@ def build_tables(runs: list[dict], args: argparse.Namespace) -> dict[str, pd.Dat
         "token_error_breakdown": pd.DataFrame(error_rows),
     }
     tables["paired_fold_tests"] = build_paired_fold_tests(tables["per_fold_f1"])
+    tables["paired_condition_tests"] = build_paired_condition_tests(tables["per_fold_f1"])
+    tables["paired_track_tests"] = build_paired_track_tests(tables["per_fold_f1"])
     tables["token_error_summary"] = summarise_error_breakdown(tables["token_error_breakdown"])
     return tables
 
@@ -605,7 +653,7 @@ def summarise_error_breakdown(breakdown: pd.DataFrame) -> pd.DataFrame:
     if breakdown.empty:
         return pd.DataFrame()
 
-    group_cols = ["model", "base_split_condition", "method"]
+    group_cols = ["model", "track", "base_split_condition", "method"]
     count_cols = ["eval_tokens", "entity_tokens", *ERROR_CATEGORIES, "errors_total"]
     rows: list[dict] = []
     for keys, group in breakdown.groupby(group_cols, sort=True):
@@ -644,13 +692,13 @@ def _holm_adjust(pvals: np.ndarray) -> np.ndarray:
     return adjusted
 
 
-def apply_holm_within_families(tests: pd.DataFrame) -> pd.DataFrame:
-    """Holm-adjust across every contrast sharing a (model, base_split_condition)."""
+def apply_holm_within_families(tests: pd.DataFrame, family_cols: list[str] | None = None) -> pd.DataFrame:
+    """Holm-adjust across every contrast sharing *family_cols* (default: model, track, condition)."""
     if tests.empty:
         return tests
 
     out = tests.copy()
-    family_cols = ["model", "base_split_condition"]
+    family_cols = family_cols or ["model", "track", "base_split_condition"]
     out["holm_family"] = out[family_cols].astype(str).agg(" | ".join, axis=1)
 
     for raw_col, adj_col in (("wilcoxon_p", "wilcoxon_p_holm"), ("ttest_rel_p", "ttest_rel_p_holm")):
@@ -667,6 +715,60 @@ def apply_holm_within_families(tests: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _scipy_available() -> bool:
+    try:
+        import scipy.stats  # noqa: F401
+    except Exception as exc:
+        print(f"  ! scipy unavailable, paired fold tests skipped ({exc})")
+        return False
+    return True
+
+
+_P_FLOOR_CACHE: dict[int, float] = {}
+
+
+def _wilcoxon_p_floor(n: int) -> float:
+    """Smallest two-sided p this n can produce (all differences same sign)."""
+    if n < 1:
+        return float("nan")
+    if n not in _P_FLOOR_CACHE:
+        from scipy.stats import wilcoxon
+
+        try:
+            _P_FLOOR_CACHE[n] = float(wilcoxon(np.arange(1, n + 1, dtype=float)).pvalue)
+        except Exception:
+            _P_FLOOR_CACHE[n] = float("nan")
+    return _P_FLOOR_CACHE[n]
+
+
+def _paired_test_stats(first: np.ndarray, second: np.ndarray) -> dict:
+    """Wilcoxon signed-rank and paired t-test on ``first - second``."""
+    from scipy.stats import ttest_rel, wilcoxon
+
+    diffs = first - second
+    n = len(diffs)
+    wilcoxon_p = float("nan")
+    ttest_p = float("nan")
+    if n >= 2 and np.any(diffs != 0):
+        try:
+            wilcoxon_p = float(wilcoxon(diffs, alternative="two-sided").pvalue)
+        except ValueError:
+            pass
+        try:
+            ttest_p = float(ttest_rel(first, second).pvalue)
+        except ValueError:
+            pass
+    return {
+        "n_pairs": n,
+        "mean_delta_f1": float(np.mean(diffs)) if n else float("nan"),
+        "sd_delta_f1": float(np.std(diffs, ddof=1)) if n > 1 else float("nan"),
+        "pairs_favouring_first": int(np.sum(diffs > 0)),
+        "wilcoxon_p": wilcoxon_p,
+        "ttest_rel_p": ttest_p,
+        "min_attainable_wilcoxon_p": _wilcoxon_p_floor(n),
+    }
+
+
 def build_paired_fold_tests(per_fold: pd.DataFrame) -> pd.DataFrame:
     """Pair by (training_seed, outer_fold), matching paired_fold_method_comparison().
 
@@ -676,74 +778,157 @@ def build_paired_fold_tests(per_fold: pd.DataFrame) -> pd.DataFrame:
     runner's __seed<N> suffix, which would split the seeds into separate one-seed
     tests where n=5 cannot clear the two-sided signed-rank floor of p=0.0625.
     """
-    if per_fold.empty:
+    if per_fold.empty or not _scipy_available():
         return pd.DataFrame()
-    try:
-        from scipy.stats import ttest_rel, wilcoxon
-    except Exception as exc:
-        print(f"  ! scipy unavailable, paired fold tests skipped ({exc})")
-        return pd.DataFrame()
-
-    floor_cache: dict[int, float] = {}
-
-    def _p_floor(n: int) -> float:
-        """Smallest two-sided p this n can produce (all differences same sign)."""
-        if n < 1:
-            return float("nan")
-        if n not in floor_cache:
-            try:
-                floor_cache[n] = float(wilcoxon(np.arange(1, n + 1, dtype=float)).pvalue)
-            except Exception:
-                floor_cache[n] = float("nan")
-        return floor_cache[n]
 
     rows: list[dict] = []
-    group_cols = ["model", "base_split_condition", "router"]
+    group_cols = ["model", "track", "base_split_condition", "router"]
 
     for keys, group in per_fold.groupby(group_cols):
+        track = keys[1]
         wide = group.pivot_table(index=["seed", "outer_fold"], columns="method", values="f1")
-        router_cols = [c for c in wide.columns if "Exp06 OOF" in c]
+        router_cols = [c for c in wide.columns if ROUTER_LABEL_SUFFIX[track] in c]
         if not router_cols:
             continue
         fusion_col = router_cols[0]
 
-        for label, _ in BASE_METHODS:
+        for label, _ in BASE_METHODS_BY_TRACK[track]:
             if label not in wide.columns:
                 continue
             paired = wide[[fusion_col, label]].dropna()
             if paired.empty:
                 continue
-            diffs = (paired[fusion_col] - paired[label]).to_numpy(dtype=float)
-            n = len(diffs)
-
-            wilcoxon_p = float("nan")
-            ttest_p = float("nan")
-            if n >= 2 and np.any(diffs != 0):
-                try:
-                    wilcoxon_p = float(wilcoxon(diffs, alternative="two-sided").pvalue)
-                except ValueError:
-                    pass
-                try:
-                    ttest_p = float(ttest_rel(paired[fusion_col], paired[label]).pvalue)
-                except ValueError:
-                    pass
-
+            stats = _paired_test_stats(
+                paired[fusion_col].to_numpy(dtype=float), paired[label].to_numpy(dtype=float)
+            )
             rows.append({
                 **dict(zip(group_cols, keys)),
                 "contrast": f"{fusion_col} - {label}",
                 "pairing": "training_seed x outer_fold",
                 "n_seeds": int(paired.index.get_level_values("seed").nunique()),
                 "n_folds": int(paired.index.get_level_values("outer_fold").nunique()),
-                "n_pairs": n,
-                "mean_delta_f1": float(np.mean(diffs)),
-                "sd_delta_f1": float(np.std(diffs, ddof=1)) if n > 1 else float("nan"),
-                "pairs_favouring_fusion": int(np.sum(diffs > 0)),
-                "wilcoxon_p": wilcoxon_p,
-                "ttest_rel_p": ttest_p,
-                "min_attainable_wilcoxon_p": _p_floor(n),
+                "n_pairs": stats["n_pairs"],
+                "mean_delta_f1": stats["mean_delta_f1"],
+                "sd_delta_f1": stats["sd_delta_f1"],
+                "pairs_favouring_fusion": stats["pairs_favouring_first"],
+                "wilcoxon_p": stats["wilcoxon_p"],
+                "ttest_rel_p": stats["ttest_rel_p"],
+                "min_attainable_wilcoxon_p": stats["min_attainable_wilcoxon_p"],
             })
 
     return apply_holm_within_families(pd.DataFrame(rows))
+
+
+def _fold_units(per_fold: pd.DataFrame) -> pd.DataFrame:
+    # Base-method rows repeat once per router workbook with identical values; keep one per unit.
+    return per_fold.drop_duplicates(
+        subset=["model", "track", "base_split_condition", "seed", "outer_fold", "method"]
+    )
+
+
+def _join_fold_units(first: pd.DataFrame, second: pd.DataFrame) -> pd.DataFrame:
+    cols = ["f1", "fold_sentences"]
+    left = first.set_index(["seed", "outer_fold"])[cols]
+    right = second.set_index(["seed", "outer_fold"])[cols]
+    return left.join(right, lsuffix="_a", rsuffix="_b", how="inner").dropna(subset=["f1_a", "f1_b"])
+
+
+def _cross_contrast_row(joined: pd.DataFrame) -> dict:
+    stats = _paired_test_stats(
+        joined["f1_a"].to_numpy(dtype=float), joined["f1_b"].to_numpy(dtype=float)
+    )
+    return {
+        "pairing": "training_seed x outer_fold",
+        "n_seeds": int(joined.index.get_level_values("seed").nunique()),
+        "n_folds": int(joined.index.get_level_values("outer_fold").nunique()),
+        # Non-zero means the two runs did not share fold partitions, so the pairing is invalid.
+        "fold_size_mismatches": int((joined["fold_sentences_a"] != joined["fold_sentences_b"]).sum()),
+        **stats,
+    }
+
+
+def build_paired_condition_tests(per_fold: pd.DataFrame) -> pd.DataFrame:
+    """exp07+aug minus exp07 F1 per (model, track, variant, method), paired by (seed, outer_fold).
+
+    In-fold OOF augmentation keeps the original exp07 corpus and THESIS_SPLIT_SEED, so the
+    augmented and plain runs of one seed share every outer-fold partition.
+    """
+    if per_fold.empty or not _scipy_available():
+        return pd.DataFrame()
+
+    units = _fold_units(per_fold)
+    rows: list[dict] = []
+    for (model, track, method), group in units.groupby(["model", "track", "method"]):
+        conditions = set(group["base_split_condition"])
+        for aug_condition in sorted(c for c in conditions if c.startswith(AUG_CONDITION_PREFIX)):
+            variant = aug_condition[len(AUG_CONDITION_PREFIX):]
+            plain_condition = f"{PLAIN_CONDITION_PREFIX}{variant}"
+            if plain_condition not in conditions:
+                continue
+            joined = _join_fold_units(
+                group[group["base_split_condition"] == aug_condition],
+                group[group["base_split_condition"] == plain_condition],
+            )
+            if joined.empty:
+                continue
+            row = _cross_contrast_row(joined)
+            rows.append({
+                "model": model,
+                "track": track,
+                "variant": variant,
+                "method": method,
+                "contrast": "exp07+aug - exp07",
+                "aug_mean_f1": float(joined["f1_a"].mean()),
+                "plain_mean_f1": float(joined["f1_b"].mean()),
+                **{k: v for k, v in row.items() if k != "pairs_favouring_first"},
+                "pairs_favouring_augmentation": row["pairs_favouring_first"],
+            })
+
+    return apply_holm_within_families(pd.DataFrame(rows), ["model", "track", "variant"])
+
+
+def build_paired_track_tests(per_fold: pd.DataFrame) -> pd.DataFrame:
+    """CRF minus non-CRF F1 per (model, condition, method family), paired by (seed, outer_fold).
+
+    Both tracks re-split the same corpus with the same THESIS_SPLIT_SEED, so their folds match.
+    """
+    if per_fold.empty or not _scipy_available():
+        return pd.DataFrame()
+
+    units = _fold_units(per_fold)
+    crf = units[units["track"] == "crf"]
+    non_crf = units[units["track"] == "non_crf"]
+    if crf.empty or non_crf.empty:
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+    for (model, condition, family), crf_group in crf.groupby(["model", "base_split_condition", "method_family"]):
+        non_crf_group = non_crf[
+            (non_crf["model"] == model)
+            & (non_crf["base_split_condition"] == condition)
+            & (non_crf["method_family"] == family)
+        ]
+        if non_crf_group.empty:
+            continue
+        joined = _join_fold_units(crf_group, non_crf_group)
+        if joined.empty:
+            continue
+        row = _cross_contrast_row(joined)
+        rows.append({
+            "model": model,
+            "base_split_condition": condition,
+            "augmented": condition.startswith(AUG_CONDITION_PREFIX),
+            "method_family": family,
+            "crf_method": str(crf_group["method"].iloc[0]),
+            "non_crf_method": str(non_crf_group["method"].iloc[0]),
+            "contrast": "CRF - non-CRF",
+            "crf_mean_f1": float(joined["f1_a"].mean()),
+            "non_crf_mean_f1": float(joined["f1_b"].mean()),
+            **{k: v for k, v in row.items() if k != "pairs_favouring_first"},
+            "pairs_favouring_crf": row["pairs_favouring_first"],
+        })
+
+    return apply_holm_within_families(pd.DataFrame(rows), ["model", "base_split_condition"])
 
 
 def summarise_across_folds(per_fold: pd.DataFrame) -> pd.DataFrame:
@@ -751,7 +936,7 @@ def summarise_across_folds(per_fold: pd.DataFrame) -> pd.DataFrame:
     if per_fold.empty:
         return pd.DataFrame()
 
-    group_cols = ["model", "base_split_condition", "router", "method"]
+    group_cols = ["model", "track", "base_split_condition", "router", "method"]
     rows: list[dict] = []
     for keys, group in per_fold.groupby(group_cols):
         f1 = pd.to_numeric(group["f1"], errors="coerce").dropna()
@@ -779,25 +964,36 @@ def build_readme() -> pd.DataFrame:
         ("Protocol", "Outer loop",
          "5 sentence-level multilabel-stratified folds; each sentence is in exactly one outer test."),
         ("Protocol", "Inner loop",
-         "4 folds on outer-train produce out-of-fold Exp01/Exp04 predictions used to fit the router."),
+         "4 folds on outer-train produce out-of-fold regular/cascade predictions used to fit the router."),
+        ("Protocol", "Base tracks",
+         "track=non_crf: Exp01 + Exp04 base models (06_*_oof routers). track=crf: Exp10 regular "
+         "BERT-CRF + Exp10 cascade-CRF base models (10_*_oof routers). Every sheet carries the track "
+         "column and tracks are never pooled."),
+        ("Protocol", "Augmented conditions (exp07aug_*)",
+         "In-fold augmentation: the CV corpus is the original exp07 split (train + eval), every "
+         "inner-train / outer-train set is extended with mask-fill variants generated from that "
+         "fold's training sentences only (replacement vocabulary included), and inner-val / "
+         "outer-test are never augmented. augmented=True marks these rows."),
         ("Protocol", "Router isolation",
          "Outer-test sentences are never used for NER training, inner OOF, or router fitting."),
         ("Protocol", "Base model training size",
-         "~80% of the corpus per outer fold (approx. 120 of 150 sentences)."),
+         "~80% of the corpus per outer fold (approx. 120 of 150 or 240 of ~300 sentences), plus "
+         "synthetic sentences on exp07aug_* conditions."),
         ("Protocol", "Scored sentences", "All corpus sentences, pooled over outer tests."),
         ("Metric", "Definition",
          "Strict entity-level micro F1 (seqeval), exact span and component-type match."),
         ("Derivation", "Direct NER / cascade",
          "Read directly from regular_pred_label / cascade_pred_label in the OOF detailed_results sheet."),
         ("Derivation", "Cascade + repair",
-         "Exp05 B/I type consistency re-applied to cascade_bio / cascade_etype using bio_prob."),
+         "Exp05 B/I type consistency re-applied to cascade_bio / cascade_etype using bio_prob "
+         "(non-CRF track only; the Exp10 cascade already applies this repair after Viterbi decoding)."),
         ("Derivation", "Confidence fusion",
          "Agreements pass through; disagreements take the higher-confidence source, ties to direct NER."),
         ("Derivation", "Router fusion", "fused_pred_label as produced by the frozen per-fold router."),
         ("Derivation", "Retraining", "None. All methods are re-scored from cached OOF predictions."),
         ("Caveat", "Comparison with the 70/30 holdout tables",
-         "Not directly comparable: holdout trains on ~105 sentences and scores 45, this protocol "
-         "trains on ~120 and scores all 150. Report the two in separate tables."),
+         "Not directly comparable: the holdout trains on ~70% of the corpus and scores ~30%, this "
+         "protocol trains on ~80% per fold and scores every sentence. Report the two in separate tables."),
         ("Caveat", "Significance testing",
          "Pairing is by (training_seed, outer_fold), so S seeds give S x 5 paired observations; "
          "20 seeds give n=100. The two-sided signed-rank p has a floor of 2/2^n for small n "
@@ -813,7 +1009,19 @@ def build_readme() -> pd.DataFrame:
         ("Sheets", "per_fold_f1", "Per-(seed, outer_fold) F1 for every method (paired units)."),
         ("Sheets", "paired_fold_tests",
          "Paired deltas with Wilcoxon and paired t-test p-values, Holm-adjusted within each "
-         "(model, base_split_condition) family."),
+         "(model, track, base_split_condition) family."),
+        ("Sheets", "paired_condition_tests",
+         "exp07+aug minus exp07 F1 per (model, track, variant, method), paired by (training_seed, "
+         "outer_fold). Valid because in-fold augmentation keeps the original corpus and seed, so both "
+         "conditions share every fold partition; fold_size_mismatches must be 0. Holm-adjusted "
+         "within each (model, track, variant) family."),
+        ("Sheets", "paired_track_tests",
+         "CRF minus non-CRF F1 per (model, condition, method_family), paired by (training_seed, "
+         "outer_fold) on identical folds; method_family matches Direct NER, Cascade, Confidence "
+         "fusion and each router across tracks. Holm-adjusted within each (model, condition) family."),
+        ("Columns", "track / augmented / method_family",
+         "track = non_crf | crf; augmented = exp07aug_* condition; method_family = track-independent "
+         "method name used to pair CRF with non-CRF rows."),
         ("Columns", "split_condition vs base_split_condition",
          "split_condition is the runner's key and carries a __seed<N> suffix, so there is one "
          "per (condition, training seed). base_split_condition drops that suffix and is the "
@@ -825,12 +1033,12 @@ def build_readme() -> pd.DataFrame:
          "THESIS_SPLIT_SEED drives fold assignment, each training seed yields a different 5-fold "
          "partition, so the seed dimension is repeated CV rather than reruns of one partition."),
         ("Sheets", "token_error_summary",
-         "Token error counts summed over all training seeds per (model, condition, method): "
+         "Token error counts summed over all training seeds per (model, track, condition, method): "
          "false_positive, false_negative, type_error, boundary_error, correct, eval_tokens."),
         ("Sheets", "token_error_breakdown",
          "Same counts per individual run, so spread across seeds can be computed. Base-method "
-         "rows appear once per (model, condition, seed) with router='(shared by all routers)' "
-         "because all five routers reuse the same cached Exp01/Exp04 predictions."),
+         "rows appear once per (model, track, condition, seed) with router='(shared by all routers)' "
+         "because all routers of a track reuse the same cached base-model predictions."),
         ("Metric", "Token error taxonomy",
          "classify_error() from experiments/error_analysis.py, so these counts match the "
          "error_type_summary sheets of the individual experiments: false_positive = spurious "
@@ -846,7 +1054,8 @@ def build_readme() -> pd.DataFrame:
          "seed-based holdout numbers, and the runner's own fold sheets for cross-checking."),
         ("Reading order", "Which sheet for what",
          "Main table cells -> fold_summary. Headline gain -> fusion_vs_base. p-values -> "
-         "paired_fold_tests. Error analysis -> token_error_summary. Methods lambda -> "
+         "paired_fold_tests. Augmentation effect -> paired_condition_tests. CRF effect -> "
+         "paired_track_tests. Error analysis -> token_error_summary. Methods lambda -> "
          "journal_lambda_grid. Holdout comparison -> journal_main_table."),
     ]
     return pd.DataFrame(rows, columns=["Section", "Key", "Value"])
@@ -909,20 +1118,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if not runs:
         print("\nNo OOF fusion results found. Point --oof-dir at the cross-comparison output "
-              "directory (the one containing the 06_*_oof result files).")
+              "directory (the one containing the 06_*_oof / 10_*_oof result files).")
         return 1
 
     runs = dedupe_runs(runs)
-    print(f"  {len(runs)} unique (model, condition, seed, router) run(s) after de-duplication")
+    print(f"  {len(runs)} unique (model, track, condition, seed, router) run(s) after de-duplication")
     if len(runs) <= 12:
         for run in runs:
             key = _run_key(run["meta"], run["path"])
-            print(f"    - model={key[0]} condition={key[1]} seed={key[2]} router={key[3]}")
+            print(f"    - model={key[0]} track={key[1]} condition={key[2]} seed={key[3]} router={key[4]}")
     else:
         keys = [_run_key(r["meta"], r["path"]) for r in runs]
         print(f"    models={sorted({k[0] for k in keys})}")
-        print(f"    conditions={sorted({k[1] for k in keys})}")
-        print(f"    seeds={len({k[2] for k in keys})}, routers={sorted({k[3] for k in keys})}")
+        print(f"    tracks={sorted({k[1] for k in keys})}")
+        print(f"    conditions={sorted({k[2] for k in keys})}")
+        print(f"    seeds={len({k[3] for k in keys})}, routers={sorted({k[4] for k in keys})}")
 
     if args.splits_dir:
         print(f"\nResolving split JSONs per condition from {args.splits_dir}")
@@ -966,6 +1176,8 @@ def main(argv: list[str] | None = None) -> int:
         "fold_summary",
         "fusion_vs_base",
         "paired_fold_tests",
+        "paired_condition_tests",
+        "paired_track_tests",
         "per_fold_f1",
         "token_error_summary",
         "token_error_breakdown",
@@ -989,13 +1201,13 @@ def main(argv: list[str] | None = None) -> int:
     main_table = tables["unified_main_table"]
     if not main_table.empty:
         print("\nPooled outer-test F1 (one protocol, identical tokens):")
-        preview = main_table[["model", "split_condition", "method", "f1", "eval_sentences"]]
+        preview = main_table[["model", "track", "split_condition", "method", "f1", "eval_sentences"]]
         print(preview.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 
     deltas = tables["fusion_vs_base"]
     if not deltas.empty:
         print("\nFusion minus baseline on identical tokens:")
-        preview = deltas[["model", "split_condition", "baseline_method", "baseline_f1",
+        preview = deltas[["model", "track", "split_condition", "baseline_method", "baseline_f1",
                           "fusion_f1", "delta_f1"]]
         print(preview.to_string(index=False, float_format=lambda v: f"{v:+.3f}"))
     return 0

@@ -92,6 +92,14 @@ Upload or open from the repo: `colab_150_sentences_journal_10seeds.ipynb` (not t
 - **Seeds:** started at 10, extended to 20 via cell "7a2 — Extend training seeds 10 → 20" — this **appends** 10 new random seeds to the existing `training_seeds.json` instead of regenerating it, so every already-completed run for the original 10 seeds stays valid and only the new 10 need training. Idempotent (no-op if the file already has ≥20 seeds); do **not** use `--rerun-experiments` or `--regenerate-training-seeds` for this, as both would force a full retrain or discard the old seeds respectively.
 - **Disabled-by-default cells:** "7c — Debug run" and "9 — Optional rebuild" are commented out so `Run All` doesn't accidentally retrain everything or clobber the extended seed list (uncomment manually only for one-off debugging).
 
+## 5a. Pre-built notebook (full corpus, augmentation + CRF, 20 seeds)
+
+`colab_full_aug_crf_journal.ipynb` runs the canonical full-corpus command of `thesis_overview.md` (Part I §1 / Part IV §1): six encoders, `exp07` + `exp07+aug`, non-CRF and CRF tracks with all six OOF routers each (`06_*_oof`, `10_*_oof`), Exp04 and Exp10 λ grids, `--isolate-splits`, `--consolidated-error-analysis split`, 20 seeds, outputs under `MyDrive/thesis_project/full_aug_crf_run`.
+
+- Use a GPU runtime; the run is long (about 36,000 OOF base-pair trainings) and is resumed with `--resume`. Re-run the same cells after a disconnect — never change the model / experiment / condition lists between resumes.
+- The preflight cell checks free Drive space: the fold caches need tens of GB.
+- Cell 9 builds `unified_protocol_table.xlsx` (copying the `*_oof` workbooks to local disk first) and the inspect cell checks `n_pairs` (= 20 × 5) and `fold_size_mismatches` (= 0).
+
 ## 6. Running Experiments
 
 Finally, you can run your experiments directly through shell commands (by prefixing with `!`) or interactively in Notebook cells.

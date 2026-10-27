@@ -69,6 +69,24 @@ def _extract_final_f1(metrics_path: Path) -> float | None:
     return float(final_rows.iloc[-1]["pipeline_span_f1"])
 
 
+def _read_loss_weights(metrics_path: Path) -> dict:
+    if not metrics_path.exists():
+        return {}
+    try:
+        df = pd.read_excel(metrics_path, sheet_name="loss_config")
+    except ValueError:
+        return {}
+    if df.empty:
+        return {}
+    row = df.iloc[0]
+    return {
+        "lambda_bio": float(row["lambda_bio"]),
+        "lambda_type": float(row["lambda_type"]),
+        "lambda_crf": float(row["lambda_crf"]),
+        "lambda_source": str(row.get("lambda_source", "")),
+    }
+
+
 def run() -> dict:
     model_name, is_local_model = configure_model_environment()
     seed_raw = (os.environ.get("THESIS_SPLIT_SEED") or "42").strip()
@@ -141,6 +159,7 @@ def run() -> dict:
             "crf_head": "full_bio_tag_linear_chain_crf",
             "step3_bi_consistency": True,
             "config_source": "core/cascaded_crf_runtime.py",
+            **_read_loss_weights(archived_metrics_path),
         },
         "metrics_file": str(archived_metrics_path),
         "f1": f1,

@@ -792,7 +792,7 @@ python run_cross_data_model_comparison.py \
   --base-mode auto --num-seeds 20 --resume
 ```
 
-**Full corpus (~300 sentences):**
+**Full corpus (~300 sentences):** the canonical full run (six encoders, `exp07` + `exp07+aug`, non-CRF and CRF OOF routers, 20 seeds) is documented in [`thesis_overview.md`](thesis_overview.md) Part I §1 and Part IV §1; the reduced command below omits augmentation and the CRF track.
 
 ```bash
 python run_cross_data_model_comparison.py \
@@ -855,7 +855,7 @@ python run_cross_data_model_comparison.py \
   --base-mode auto
 ```
 
-**Full corpus (~300 sentences):**
+**Full corpus (~300 sentences), reduced journal defaults:** for the canonical full run with augmentation and the CRF track see [`thesis_overview.md`](thesis_overview.md) Part IV §1.
 
 ```bash
 python run_cross_data_model_comparison.py \

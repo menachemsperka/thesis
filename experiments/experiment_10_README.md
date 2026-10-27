@@ -25,10 +25,17 @@ After working through this experiment, you should be able to explain:
 | `10_regular` | `outputs/exp10_regular/` | `experiments/experiment_10_regular_ner_crf.py` | `core/bert_crf_training.py`, `core/crf_layer.py` |
 | `10_cascade` | `outputs/exp10_cascade/` | `experiments/experiment_10_cascaded_pipeline_crf.py` | `core/cascaded_crf_runtime.py` |
 | `10_fusion_ready` | `outputs/exp10_fusion_ready/` | `experiments/experiment_10_fusion_crf_ready.py` | `experiments/fusion_crf_ready_sources.py` |
-| `10_svm_ready` | `outputs/exp10_svm_ready/` | `experiments/experiment_10_fusion_svm_ready.py` | Same fusion loader + sklearn router |
+| `10_svm_ready` | `outputs/exp10_svm_ready/` | `experiments/experiment_10_fusion_svm_ready.py` | Same fusion loader + sklearn router (appendix: in-sample) |
+| `10_svm_oof` … `10_mlp_oof` | runner `--output-dir` (`fusion_*_crf_oof_*.xlsx`) | `experiments/experiment_10_fusion_*_oof.py` | `experiments/fusion_router_oof_common.py` (`CRF_TRACK`) — **primary** CRF router evaluation |
 
 **Orchestration:** `run_cross_data_model_comparison.py`  
 **Separate base cache index:** `outputs/cross_comparison/cross_comparison_base_crf_ready_index.json`
+
+**Full-corpus additions (see `thesis_overview.md` §12A.5–§12A.7, Part III):**
+
+- **OOF CRF routers** (`10_*_oof`): the six routers are evaluated by the same nested 5×4 CV as `06_*_oof`, retraining `10_regular` + `10_cascade` inside every fold (cache prefix `crf_` under `oof_router_cache/`); on `exp07+aug` conditions training folds are augmented in-fold. `build_unified_protocol_table.py` compares the CRF and non-CRF tracks fold by fold (`paired_track_tests`).
+- **Own λ grid:** the CRF cascade's $\lambda_{bio}$, $\lambda_{type}$ come from a separate validation grid (`experiment_04_loss_weight_grid.py exp10`, cache `exp10_lambda_grid_cache/`), applied via `THESIS_EXP10_LAMBDA_BIO` / `THESIS_EXP10_LAMBDA_TYPE` (unset → Exp04 values); $\lambda_{crf}=0.5$ is fixed. Each cascade workbook records them in a `loss_config` sheet.
+- **All encoders:** `core/bert_crf_training.py` loads the encoder with `load_encoder_backbone` and tokenizes with `encode_words_for_ner`, so HeRo, XLM-R and mT5 run on the CRF track as well.
 
 ---
 

@@ -38,10 +38,21 @@ JOURNAL_FOCUS_EXP_IDS = (
     "exp06_lr_oof",
     "exp06_rf_oof",
     "exp06_mlp_oof",
+    "exp10_regular",
+    "exp10_cascade",
+    "exp10_fusion_ready",
+    "exp10_svm_oof",
+    "exp10_svm_kernel_oof",
+    "exp10_nb_oof",
+    "exp10_lr_oof",
+    "exp10_rf_oof",
+    "exp10_mlp_oof",
 )
 
-# Methods every fusion variant gets compared against in paired_fold_method_comparison.
+# Methods every fusion variant gets compared against in paired_fold_method_comparison
+# (non-CRF fusion vs. Exp01/Exp04, CRF fusion vs. Exp10 regular/cascade).
 JOURNAL_BASELINE_EXP_IDS = ("exp01", "exp04")
+JOURNAL_CRF_BASELINE_EXP_IDS = ("exp10_regular", "exp10_cascade")
 
 EXP_DISPLAY_NAMES: dict[str, str] = {
     "exp01": "Regular NER",
@@ -53,6 +64,15 @@ EXP_DISPLAY_NAMES: dict[str, str] = {
     "exp06_lr_oof": "Logistic Regression Fusion",
     "exp06_rf_oof": "RF Fusion",
     "exp06_mlp_oof": "MLP Fusion",
+    "exp10_regular": "Regular NER-CRF",
+    "exp10_cascade": "Cascade NER-CRF",
+    "exp10_fusion_ready": "Confidence Fusion (CRF)",
+    "exp10_svm_oof": "Linear SVM Fusion (CRF)",
+    "exp10_svm_kernel_oof": "RBF SVM Fusion (CRF)",
+    "exp10_nb_oof": "Naive Bayes Fusion (CRF)",
+    "exp10_lr_oof": "Logistic Regression Fusion (CRF)",
+    "exp10_rf_oof": "RF Fusion (CRF)",
+    "exp10_mlp_oof": "MLP Fusion (CRF)",
 }
 
 
@@ -189,16 +209,18 @@ def paired_fold_method_comparison(fold_long: pd.DataFrame) -> pd.DataFrame:
 
     available = [c for c in JOURNAL_FOCUS_EXP_IDS if c in pivot.columns]
     pairs: list[tuple[str, str]] = []
-    for baseline in JOURNAL_BASELINE_EXP_IDS:
+    for baseline in JOURNAL_BASELINE_EXP_IDS + JOURNAL_CRF_BASELINE_EXP_IDS:
         if baseline not in available:
             continue
+        baseline_is_crf = baseline.startswith("exp10")
         for method in available:
-            if method == baseline:
+            if method == baseline or method.startswith("exp10") != baseline_is_crf:
                 continue
             pairs.append((method, baseline))
-    # Cascade vs. Regular NER (kept even though neither is a "fusion" method).
-    if "exp04" in available and "exp01" in available and ("exp04", "exp01") not in pairs:
-        pairs.append(("exp04", "exp01"))
+    # Cascade vs. Regular NER per track (kept even though neither is a "fusion" method).
+    for cascade_id, regular_id in (("exp04", "exp01"), ("exp10_cascade", "exp10_regular")):
+        if cascade_id in available and regular_id in available and (cascade_id, regular_id) not in pairs:
+            pairs.append((cascade_id, regular_id))
 
     rows: list[dict[str, Any]] = []
     for col_a, col_b in pairs:
@@ -283,17 +305,25 @@ def build_journal_main_table(grouped_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_lambda_grid_selection(project_root: Path | None = None) -> pd.DataFrame:
-    """Lambda selection from comparison cache and/or global ``outputs/exp04_lambda_grid/``."""
+    """Lambda selections (Exp04 and Exp10 CRF cascade) from the comparison cache, else ``outputs/exp04_lambda_grid/``."""
     root = project_root or Path(__file__).resolve().parents[1]
     out_dir = (os.environ.get("THESIS_CROSS_OUTPUT_DIR") or "").strip()
     if out_dir:
-        sel = Path(out_dir) / "exp04_lambda_grid_cache" / "exp04_lambda_selection.json"
-        if sel.exists():
+        rows: list[dict[str, Any]] = []
+        for track, rel_path in (
+            ("exp04", Path("exp04_lambda_grid_cache") / "exp04_lambda_selection.json"),
+            ("exp10", Path("exp10_lambda_grid_cache") / "exp10_lambda_selection.json"),
+        ):
+            sel = Path(out_dir) / rel_path
+            if not sel.exists():
+                continue
             try:
                 data = json.loads(sel.read_text(encoding="utf-8"))
-                return pd.DataFrame([{"source": str(sel), **data}])
             except Exception:
-                pass
+                continue
+            rows.append({"cascade_track": track, "source": str(sel), **data})
+        if rows:
+            return pd.DataFrame(rows)
     grid_dir = root / "outputs" / "exp04_lambda_grid"
     if not grid_dir.exists():
         return pd.DataFrame()
@@ -326,17 +356,17 @@ def load_lambda_grid_selection(project_root: Path | None = None) -> pd.DataFrame
 
 def journal_documentation_rows() -> list[dict[str, str]]:
     return [
-        {"section": "PURPOSE", "item": "profile", "description": "IEEE journal paper (1–3 training seeds; 5-fold OOF fusion)"},
-        {"section": "cross_comparison_*.xlsx", "item": "journal_main_table", "description": "Table: Exp01/04/06_*_oof F1 mean±SD over training seeds (Exp07 split)"},
-        {"section": "cross_comparison_*.xlsx", "item": "journal_oof_fold_summary", "description": "Table: OOF methods — F1 mean±SD over 5 outer folds (primary CV evidence)"},
-        {"section": "cross_comparison_*.xlsx", "item": "journal_oof_folds_long", "description": "Raw fold F1 for paired fold tests (n=5)"},
-        {"section": "cross_comparison_*.xlsx", "item": "journal_paired_fold_deltas", "description": "ΔF1 + paired t-test/Wilcoxon p-values (paired by training_seed × outer_fold) for every fusion method vs. Regular NER and Cascade NER"},
-        {"section": "cross_comparison_*.xlsx", "item": "journal_loss_config", "description": "λ_bio, λ_type recorded per Exp04 run (see loss_config sheet in cascaded_pipeline_results.xlsx)"},
-        {"section": "cross_comparison_*.xlsx", "item": "journal_lambda_grid", "description": "Validation grid selection from experiment_04_loss_weight_grid.py"},
-        {"section": "consolidated_error_analysis_*.xlsx", "item": "summary_non_crf_*", "description": "Error types, routing, confusions: Regular vs Cascade vs SVM OOF vs RF OOF"},
-        {"section": "consolidated_error_analysis_*.xlsx", "item": "loss_config_summary", "description": "Same λ values pulled from Exp04 metrics workbooks"},
+        {"section": "PURPOSE", "item": "profile", "description": "IEEE journal paper (training seeds from training_seeds.json; 5-fold OOF fusion on the non-CRF and CRF tracks)"},
+        {"section": "cross_comparison_*.xlsx", "item": "journal_main_table", "description": "Table: Exp01/04/06_*_oof and Exp10 regular/cascade/10_*_oof F1 mean±SD over training seeds, per condition (exp07 and exp07+aug)"},
+        {"section": "cross_comparison_*.xlsx", "item": "journal_oof_fold_summary", "description": "Table: OOF methods (06_*_oof and 10_*_oof) — F1 mean±SD over 5 outer folds (primary CV evidence)"},
+        {"section": "cross_comparison_*.xlsx", "item": "journal_oof_folds_long", "description": "Raw fold F1 for paired fold tests (n = seeds × 5)"},
+        {"section": "cross_comparison_*.xlsx", "item": "journal_paired_fold_deltas", "description": "Not emitted (base models have no fold rows); use paired_fold_tests in unified_protocol_table.xlsx"},
+        {"section": "cross_comparison_*.xlsx", "item": "journal_loss_config", "description": "λ_bio, λ_type recorded per Exp04 and Exp10 cascade run (loss_config sheet; Exp10 also records λ_crf)"},
+        {"section": "cross_comparison_*.xlsx", "item": "journal_lambda_grid", "description": "Validation grid selections (cascade_track exp04 and exp10) from experiment_04_loss_weight_grid.py"},
+        {"section": "consolidated_error_analysis_*.xlsx", "item": "summary_non_crf_* / summary_crf_*", "description": "Error types, routing, confusions: Regular vs Cascade vs every OOF router, per track"},
+        {"section": "consolidated_error_analysis_*.xlsx", "item": "loss_config_summary", "description": "Same λ values pulled from the Exp04 / Exp10 cascade metrics workbooks"},
         {"section": "consolidated_error_analysis_*.xlsx", "item": "oof_fold_metrics_long", "description": "Copy of fold-level OOF metrics for appendix figures"},
-        {"section": "Methods", "item": "loss weights", "description": "Run experiment_04_loss_weight_grid.py once; set THESIS_EXP04_LAMBDA_BIO/TYPE before cross-comparison"},
-        {"section": "Methods", "item": "seeds", "description": "Use --num-seeds 1–3; training_seeds.json in output-dir for reproducibility"},
+        {"section": "Methods", "item": "loss weights", "description": "--journal-paper runs the Exp04 grid (THESIS_EXP04_LAMBDA_*) and, with CRF experiments, the Exp10 grid (THESIS_EXP10_LAMBDA_*)"},
+        {"section": "Methods", "item": "seeds", "description": "training_seeds.json in output-dir for reproducibility (3 by default, 20 for the thesis runs)"},
         {"section": "Guide", "item": "full doc", "description": "thesis_overview.md Part IV"},
     ]
