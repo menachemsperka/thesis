@@ -60,7 +60,7 @@ python experiments/experiment_04_loss_weight_grid.py
 Optional: `THESIS_EXP04_LAMBDA_GRID_VALUES=1,5,10`. Results: `outputs/exp04_lambda_grid/`.  
 Apply the selected pair with `THESIS_EXP04_LAMBDA_BIO` and `THESIS_EXP04_LAMBDA_TYPE` when running Exp04/05.
 
-The Exp10 CRF cascade has its own grid: `python experiments/experiment_04_loss_weight_grid.py exp10` (values `THESIS_EXP10_LAMBDA_GRID_VALUES`, apply with `THESIS_EXP10_LAMBDA_BIO` / `THESIS_EXP10_LAMBDA_TYPE`). `run_cross_data_model_comparison.py --journal-paper` runs both automatically.
+The Exp10 CRF cascade has its own grid: `python experiments/experiment_04_loss_weight_grid.py exp10` (values `THESIS_EXP10_LAMBDA_GRID_VALUES`, apply with `THESIS_EXP10_LAMBDA_BIO` / `THESIS_EXP10_LAMBDA_TYPE`). `run_cross_data_model_comparison.py --journal-paper` runs both automatically; by default calibration aggregates across all selected models and the first 3 persisted seeds, and you can override with `--lambda-grid-model-scope` and `--lambda-grid-num-seeds`.
 
 ## Experiment 04 in One Paragraph
 

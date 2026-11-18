@@ -135,6 +135,8 @@ OUTPUT = "/content/drive/MyDrive/thesis_project/cross_comparison_journal"
   --resume \
   --output-dir {OUTPUT} \
   --models dictabert,berel \
+  --lambda-grid-model-scope all \
+  --lambda-grid-num-seeds 3 \
   --base-mode auto \
   --exp07-source auto
 ```

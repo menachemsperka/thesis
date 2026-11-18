@@ -594,6 +594,8 @@ For each run, the following environment variables are used to bind the scientifi
 | `THESIS_EXP04_LAMBDA_GRID_VALUES` | Optional comma list for the validation grid (default `1,5,10`). |
 | `THESIS_EXP10_LAMBDA_BIO` / `THESIS_EXP10_LAMBDA_TYPE` | CRF-cascade (`10_cascade`) loss weights, set from the CRF grid (**§12A.7**); unset → the Exp04 weights. |
 | `THESIS_EXP10_LAMBDA_GRID_VALUES` | Optional comma list for the CRF grid (falls back to the Exp04 list). |
+| `THESIS_LAMBDA_GRID_MODEL_SCOPE` | Calibration scope for `--journal-paper` / `--calibrate-exp04-loss-weights`: `all` (default) or `first`. |
+| `THESIS_LAMBDA_GRID_NUM_SEEDS` | Number of persisted training seeds used during calibration (first N seeds from `training_seeds.json`; default **3**). |
 | `THESIS_OOF_AUGMENT` / `THESIS_OOF_AUGMENTATION_MODEL` | Set by the runner for `*_oof` runs on `exp07+aug` conditions (in-fold augmentation, **§5.4**). |
 | `THESIS_ISOLATE_SPLITS` | `1` = `--isolate-splits` (Exp07 / Exp07+Aug split JSONs under `--output-dir`). |
 
@@ -607,7 +609,7 @@ The important beginner idea is:
 
 Experiments `01` and `04` are expensive because they train transformer-based systems. Experiments `05_ready` and `06_ready` are cheaper because they operate on already saved predictions. **`06_*_oof`** is the most expensive fusion path (repeated Exp01 + Exp04 training inside nested CV); **`06_*_ready`** is cheap appendix inference on cached bases.
 
-**Exp04 loss weights:** Before locking multi-seed cross-comparison runs, run the validation grid once (`experiments/experiment_04_loss_weight_grid.py`) and export the selected `THESIS_EXP04_LAMBDA_BIO` / `THESIS_EXP04_LAMBDA_TYPE` for all later Exp04 training (including OOF retrains); `--journal-paper` does this automatically. The CRF cascade has its own grid and `THESIS_EXP10_LAMBDA_*` (**§12A.7**). Details: **§9.4**, Part II, [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md) §8.
+**Exp04 loss weights:** Before locking multi-seed cross-comparison runs, run the validation grid (`experiments/experiment_04_loss_weight_grid.py`) and export the selected `THESIS_EXP04_LAMBDA_BIO` / `THESIS_EXP04_LAMBDA_TYPE` for all later Exp04 training (including OOF retrains). Under `--journal-paper` this is automatic and scope-controlled (default: all selected models × first 3 persisted seeds). The CRF cascade has its own grid and `THESIS_EXP10_LAMBDA_*` (**§12A.7**). Details: **§9.4**, Part II, [`thesis_overview_150_sentences.md`](thesis_overview_150_sentences.md) §8.
 
 Experiment **10** adds another **training** pair (`10_regular`, `10_cascade`) with the same cost profile as `01`/`04`, inference-only confidence fusion (`10_fusion_ready`, plus the appendix `10_*_ready` routers), and the primary CRF routers `10_*_oof` with the same nested-CV cost as `06_*_oof`. Holdout base artifacts are stored in `cross_comparison_base_crf_ready_index.json` (separate from the Exp01/Exp04 cache).
 
@@ -969,7 +971,7 @@ export THESIS_EXP04_LAMBDA_TYPE=<selected>
 
 Environment overrides are read in `core/auc_cascaded_pipeline.py` (`THESIS_EXP04_LAMBDA_BIO`, `THESIS_EXP04_LAMBDA_TYPE`). If the grid selects $(10,5)$ or lies on a flat region near those defaults, existing main results remain valid; the grid still supplies the ablation evidence for the paper.
 
-**Runner integration.** `--journal-paper` (or `--calibrate-exp04-loss-weights`) runs this grid resume-aware into `{output-dir}/exp04_lambda_grid_cache/` before the comparison whenever Exp04 training is selected (`04`, ready experiments that may train the base pair, `06_*_oof`), and sets the selection for every Exp04 training of the run, including all OOF fold retrains. The grid uses the default calibration encoder and the first training seed; the selected pair applies to every encoder. The CRF cascade adds a CRF loss term and is calibrated by its own grid (**§12A.7**).
+**Runner integration.** `--journal-paper` (or `--calibrate-exp04-loss-weights`) runs this grid resume-aware into `{output-dir}/exp04_lambda_grid_cache/` before the comparison whenever Exp04 training is selected (`04`, ready experiments that may train the base pair, `06_*_oof`), and sets the selection for every Exp04 training of the run, including all OOF fold retrains. By default calibration runs across all selected models and the first 3 persisted training seeds, aggregates mean validation pipeline span F1 per λ pair, and picks one shared pair for the run. Use `--lambda-grid-model-scope` (`all`/`first`) and `--lambda-grid-num-seeds` to change the scope. The CRF cascade adds a CRF loss term and is calibrated by its own grid (**§12A.7**).
 
 ### 9.5 Focal Loss for Imbalance
 
@@ -1652,7 +1654,7 @@ The CRF term changes the optimisation landscape, so the Exp04 optimum need not t
 | Flags | `--regenerate-exp10-loss-grid` re-runs it; `--skip-exp04-loss-calibration` skips both grids |
 | Standalone | `python experiments/experiment_04_loss_weight_grid.py exp10` (`THESIS_EXP10_LAMBDA_GRID_VALUES` optional) |
 
-As for Exp04, one pair is calibrated on the default calibration encoder and the first training seed and then applied to every encoder, every holdout run and every OOF fold retrain of the CRF cascade.
+As for Exp04, one pair is selected per run and then applied to every encoder, every holdout run and every OOF fold retrain of the CRF cascade. By default this selection aggregates calibration runs across all selected encoders and the first 3 persisted training seeds; you can narrow or widen scope with `--lambda-grid-model-scope` and `--lambda-grid-num-seeds`.
 
 ---
 
@@ -2631,6 +2633,7 @@ Explicit flags (or their `THESIS_CROSS_*` env equivalents) always win; the journ
 |------|----------|--------------|
 | **Loss weights (Exp04)** | Validation grid `{1,5,10}²` → sets `THESIS_EXP04_LAMBDA_BIO/TYPE` when Exp04 training is selected (`04`, ready fusion, `06_*_oof`) | `{output-dir}/exp04_lambda_grid_cache/exp04_lambda_selection.json` + `exp04_lambda_grid_progress.json` (per grid cell) |
 | **Loss weights (Exp10)** | Separate grid for the CRF cascade → sets `THESIS_EXP10_LAMBDA_BIO/TYPE` when CRF training is selected (`10_regular`, `10_cascade`, `10_*_ready`, `10_*_oof`) | `{output-dir}/exp10_lambda_grid_cache/exp10_lambda_selection.json` + `exp10_lambda_grid_progress.json` |
+| **Calibration scope** | Defaults to all models in `--models` × first 3 persisted seeds; selects one λ pair per track by mean validation F1 | Override with `--lambda-grid-model-scope` and `--lambda-grid-num-seeds` |
 | **Training seeds** | 3 random seeds unless `--num-seeds` / `THESIS_CROSS_NUM_SEEDS` is given (canonical: 20) | `{output-dir}/training_seeds.json` |
 | **Comparison** | Default `01,04,06_svm_oof,06_rf_oof` on `exp07` (no aug) unless `--experiments` / `--condition-sources` are given | `{output-dir}/cross_comparison_progress_latest.json` |
 | **Export** | Journal sheets + consolidated error analysis (`all` unless `--consolidated-error-analysis` is given; canonical: `split`) | Rebuild export skips re-training if checkpoint complete |

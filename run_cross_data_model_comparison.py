@@ -123,6 +123,10 @@ Environment Variables
     Set to ``0`` to keep ``outputs/trained_models/`` for Hugging Face upload.
 ``THESIS_CROSS_BASE_MODE``
     Base artifact mode: ``auto`` / ``reuse`` / ``retrain``.
+``THESIS_LAMBDA_GRID_MODEL_SCOPE``
+    Lambda-grid calibration model scope: ``all`` (default) or ``first``.
+``THESIS_LAMBDA_GRID_NUM_SEEDS``
+    Number of training seeds to use during lambda-grid calibration (default: ``3``).
 ``THESIS_DEBUG``
     Set to ``1`` for verbose subprocess output.
 ``THESIS_NUM_EPOCHS``
@@ -2419,6 +2423,8 @@ def run_comparison(
     calibrate_exp04_loss_weights: bool = False,
     regenerate_exp04_loss_grid: bool = False,
     regenerate_exp10_loss_grid: bool = False,
+    lambda_grid_model_scope: str = "all",
+    lambda_grid_num_seeds: int = 3,
     isolate_splits: bool = False,
 ) -> dict:
     """Run all (model × data-condition × experiment) combinations.
@@ -2535,6 +2541,12 @@ def run_comparison(
             raise ValueError(f"Unknown model key: {mk}. Available: {list(MODEL_REGISTRY.keys())}")
         models.append(MODEL_REGISTRY[mk])
 
+    lambda_grid_model_scope = (lambda_grid_model_scope or "all").strip().lower()
+    if lambda_grid_model_scope not in {"all", "first"}:
+        raise ValueError("lambda_grid_model_scope must be one of: all, first")
+    if int(lambda_grid_num_seeds) < 1:
+        raise ValueError("lambda_grid_num_seeds must be >= 1")
+
     COMPARISON_DIR.mkdir(parents=True, exist_ok=True)
 
     # Ready experiments train their missing base pair through the same caches, so they need the weights too.
@@ -2554,12 +2566,21 @@ def run_comparison(
         ("exp04", "Exp04", needs_exp04_lambda, regenerate_exp04_loss_grid),
         ("exp10", "Exp10 CRF cascade", needs_exp10_lambda, regenerate_exp10_loss_grid),
     ]
+    calibration_models = models if lambda_grid_model_scope == "all" else models[:1]
+    calibration_model_refs = [_resolve_local_model_path(m["model_id"]) for m in calibration_models]
+    calibration_split_seeds = seeds[: min(len(seeds), int(lambda_grid_num_seeds))]
+    if not calibration_split_seeds:
+        calibration_split_seeds = [DEFAULT_BASE_SEED]
     for track, label, needed, force_rebuild in calibration_jobs:
         if not (calibrate_exp04_loss_weights and needed and not rebuild_from_checkpoint):
             continue
-        os.environ.setdefault("THESIS_SPLIT_SEED", str(seeds[0] if seeds else DEFAULT_BASE_SEED))
+        os.environ.setdefault("THESIS_SPLIT_SEED", str(calibration_split_seeds[0]))
         print(f"\n{'-'*60}")
         print(f"  [PREP] {label} validation loss-weight grid (resume-aware)")
+        print(
+            f"  [PREP] calibration scope: {len(calibration_model_refs)} model(s) x "
+            f"{len(calibration_split_seeds)} seed(s)"
+        )
         print(f"{'-'*60}")
         try:
             from exp04_loss_calibration import ensure_loss_weights_calibrated
@@ -2569,6 +2590,8 @@ def run_comparison(
                 track=track,
                 resume=resume,
                 force_rebuild=force_rebuild,
+                model_refs=calibration_model_refs,
+                split_seeds=calibration_split_seeds,
                 log_fn=_log,
             )
             manifest_path = COMPARISON_DIR / "run_manifest.json"
@@ -3853,6 +3876,24 @@ if __name__ == "__main__":
         help="Ignore cached Exp10 CRF lambda selection and re-run the full CRF-cascade validation grid.",
     )
     parser.add_argument(
+        "--lambda-grid-model-scope",
+        choices=["all", "first"],
+        default=(os.environ.get("THESIS_LAMBDA_GRID_MODEL_SCOPE") or "all").strip().lower(),
+        help=(
+            "Model scope for lambda-grid calibration: all models in --models (default) "
+            "or only the first model."
+        ),
+    )
+    parser.add_argument(
+        "--lambda-grid-num-seeds",
+        type=int,
+        default=int((os.environ.get("THESIS_LAMBDA_GRID_NUM_SEEDS") or "3").strip() or "3"),
+        help=(
+            "How many persisted training seeds to use for lambda-grid calibration "
+            "(first N seeds from training_seeds.json; default: 3)."
+        ),
+    )
+    parser.add_argument(
         "--rerun-experiments",
         default=(os.environ.get("THESIS_CROSS_RERUN_EXPERIMENTS") or "").strip(),
         help=(
@@ -4058,6 +4099,8 @@ if __name__ == "__main__":
             calibrate_exp04_loss_weights=calibrate_loss,
             regenerate_exp04_loss_grid=bool(args.regenerate_exp04_loss_grid),
             regenerate_exp10_loss_grid=bool(args.regenerate_exp10_loss_grid),
+            lambda_grid_model_scope=args.lambda_grid_model_scope,
+            lambda_grid_num_seeds=int(args.lambda_grid_num_seeds),
             isolate_splits=bool(args.isolate_splits),
         )
     except KeyboardInterrupt:

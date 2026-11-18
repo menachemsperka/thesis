@@ -569,7 +569,7 @@ The reference profile matches the **completed Colab run** for DictaBERT and BERE
 
 Exp05 / Exp06 “ready” and fusion steps **reuse** Exp01/Exp04 artifacts; they do not change base training hyperparameters.
 
-**Calibrating $\lambda_{bio}$, $\lambda_{type}$:** Run `experiments/experiment_04_loss_weight_grid.py` once per split policy (default grid `{1,5,10}^2` on validation). Set `THESIS_EXP04_LAMBDA_BIO` and `THESIS_EXP04_LAMBDA_TYPE` from the `selection` sheet in `outputs/exp04_lambda_grid/` **before** cross-comparison. Exported automatically to `cross_comparison_*.xlsx` sheets **`journal_lambda_grid`** / **`journal_loss_config`** and consolidated **`loss_config_summary`**. Full paper workflow: [`thesis_overview_journal_paper_results.md`](thesis_overview_journal_paper_results.md).
+**Calibrating $\lambda_{bio}$, $\lambda_{type}$:** Run `experiments/experiment_04_loss_weight_grid.py` on validation (default grid `{1,5,10}^2`) and set `THESIS_EXP04_LAMBDA_BIO` and `THESIS_EXP04_LAMBDA_TYPE` from the `selection` sheet in `outputs/exp04_lambda_grid/` **before** cross-comparison. Under `--journal-paper`, calibration is automatic and defaults to all selected models × first 3 persisted seeds, with one shared λ pair chosen by mean validation F1; override with `--lambda-grid-model-scope` and `--lambda-grid-num-seeds`. Exported automatically to `cross_comparison_*.xlsx` sheets **`journal_lambda_grid`** / **`journal_loss_config`** and consolidated **`loss_config_summary`**. Full paper workflow: [`thesis_overview_journal_paper_results.md`](thesis_overview_journal_paper_results.md).
 
 ---
 
@@ -872,6 +872,7 @@ python run_cross_data_model_comparison.py \
 | Step | Behavior | Resume cache |
 |------|----------|--------------|
 | **Loss weights** | Validation grid `{1,5,10}²` → sets `THESIS_EXP04_LAMBDA_BIO/TYPE` | `{output-dir}/exp04_lambda_grid_cache/exp04_lambda_selection.json` + `exp04_lambda_grid_progress.json` (per grid cell) |
+| **Calibration scope** | Defaults to all models in `--models` × first 3 persisted seeds; selects one λ pair by mean validation F1 | Override with `--lambda-grid-model-scope` and `--lambda-grid-num-seeds` |
 | **Training seeds** | 3 random seeds persisted | `{output-dir}/training_seeds.json` |
 | **Comparison** | `01,04,06_svm_oof,06_rf_oof`, exp07 only, no aug | `{output-dir}/cross_comparison_progress_latest.json` |
 | **Export** | Journal sheets + consolidated error analysis (`all`) | Rebuild export skips re-training if checkpoint complete |
